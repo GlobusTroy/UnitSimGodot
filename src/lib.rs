@@ -7,7 +7,7 @@ use gdnative::{
     api::{RandomNumberGenerator, VisualServer},
     prelude::*,
 };
-use physics::spatial_structures::SpatialAwareness;
+use physics::spatial_structures::*;
 
 mod boid;
 mod graphics;
@@ -60,7 +60,7 @@ impl ECSWorld {
         schedule_physics.add_stage("resolve_collisions", collisions_stage);
 
         let mut schedule_behavior = Schedule::default();
-        schedule_behavior.add_stage("build_flow_fields", SystemStage::parallel().with_system(build_flow_fields)); 
+        //schedule_behavior.add_stage("build_flow_fields", SystemStage::parallel().with_system(build_flow_fields)); 
         schedule_behavior.add_stage(
             "boid_steer",
             SystemStage::parallel()
@@ -133,7 +133,7 @@ impl ECSWorld {
         let canvas_item_rid = visual_server.canvas_item_create();
         unsafe {
             visual_server.canvas_item_set_parent(canvas_item_rid, self.canvas_item);
-            visual_server.canvas_item_add_circle(
+            visual_server.canvas_item_add_(
                 canvas_item_rid,
                 Vector2::ZERO,
                 radius as f64,
@@ -160,7 +160,7 @@ impl ECSWorld {
             .insert(Radius { r: radius })
             .insert(Mass(mass))
             .insert(BoidParams {
-                max_force: 10.,
+                max_force: 5. * mass,
                 max_speed: movespeed,
             })
             .insert(SeparationBoid {

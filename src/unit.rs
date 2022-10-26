@@ -10,5 +10,5 @@ pub enum TeamValue {
 
 #[derive(Component)]
 pub struct TeamAlignment {
-    alignment: TeamValue 
+    pub alignment: TeamValue 
 }
