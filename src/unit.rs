@@ -4,13 +4,12 @@ use gdnative::prelude::*;
 use crate::{
     graphics::{
         animation::{AnimatedSprite, PlayAnimationDirective},
-        particles::NewParticleEffectDirective,
         CleanupCanvasItem, FlippableSprite, NewCanvasItemDirective, Renderable, ScaleSprite,
     },
     physics::{
-        spatial_structures::SpatialNeighborsCache, DeltaPhysics, Position, Radius, Velocity,
+        spatial_structures::{SpatialNeighborsCache, SpatialHashTable}, DeltaPhysics, Position, Radius, Velocity,
     },
-    util::{normalized_or_zero, true_distance, ExpirationTimer},
+    util::{normalized_or_zero, true_distance, ExpirationTimer}, boid::BoidParams,
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +21,9 @@ pub struct UnitBlueprint {
     pub hitpoints: f32,
     pub texture: Rid,
     pub weapons: Vec<Weapon>,
+    pub abilities: Vec<UnitAbility>,
+    pub armor: f32,
+    pub magic_resist: f32,
 }
 
 impl UnitBlueprint {
@@ -32,6 +34,8 @@ impl UnitBlueprint {
         mass: f32,
         movespeed: f32,
         acceleration: f32,
+        armor: f32,
+        magic_resist: f32,
     ) -> Self {
         Self {
             radius: radius,
@@ -41,11 +45,18 @@ impl UnitBlueprint {
             texture: texture,
             hitpoints: hitpoints,
             weapons: Vec::new(),
+            abilities: Vec::new(),
+            armor: armor,
+            magic_resist: magic_resist,
         }
     }
 
     pub fn add_weapon(&mut self, weapon: Weapon) {
         self.weapons.push(weapon);
+    }
+
+    pub fn add_ability(&mut self, ability: UnitAbility) {
+        self.abilities.push(ability);
     }
 }
 
@@ -54,6 +65,11 @@ pub enum TeamValue {
     NeutralPassive,
     NeutralHostile,
     Team(usize),
+}
+
+#[derive(Component)]
+pub struct StunOnHitEffect {
+    pub duration: f32,
 }
 
 #[derive(Component)]
@@ -67,9 +83,18 @@ pub struct Hitpoints {
     pub hp: f32,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum DamageType {
+    Normal,
+    Poison,
+    Magic,
+}
+
+#[derive(Debug)]
 pub struct DamageInstance {
     pub damage: f32,
     pub delay: f32,
+    pub damage_type: DamageType,
 }
 
 #[derive(Component)]
@@ -77,8 +102,57 @@ pub struct AppliedDamage {
     pub damages: Vec<DamageInstance>,
 }
 
+#[derive(Component, Debug, Clone, Copy)]
+pub struct CleanseAbility {
+    pub range: f32,
+    pub cooldown: f32,
+    pub swing_time: f32,
+    pub impact_time: f32,
+    pub effect_texture: Rid,
+
+    pub time_until_cleanse_cooled: f32,
+}
+
+#[derive(Debug, Component, Clone, Copy)]
+pub struct HealAbility {
+    pub heal_amount: f32,
+    pub range: f32,
+    pub cooldown: f32,
+    pub swing_time: f32,
+    pub impact_time: f32,
+    pub effect_texture: Rid,
+
+    pub time_until_cooled: f32,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SlowPoisonAttack{
+    pub duration: f32,
+    pub percent_damage: f32,
+    pub speed_multiplier: f32,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SlowPoisonEffect{
+    pub remaining_time: f32,
+    pub effect_originator: SlowPoisonAttack 
+}
+
 #[derive(Component, Clone, Debug, Copy)]
 pub struct MeleeWeapon {
+    pub damage: f32,
+    pub range: f32,
+
+    pub cooldown_time: f32,
+    pub impact_time: f32,
+    pub full_swing_time: f32,
+
+    pub time_until_weapon_cooled: f32,
+    pub stun_duration: f32,
+}
+
+#[derive(Component, Clone, Debug, Copy)]
+pub struct RadiusWeapon {
     pub damage: f32,
     pub range: f32,
 
@@ -100,7 +174,7 @@ pub struct ProjectileWeapon {
     pub projectile_scale: f32,
     pub full_swing_time: f32,
     pub projectile_texture: Rid,
-
+    pub splash_radius: f32,
     pub time_until_weapon_cooled: f32,
 }
 
@@ -109,7 +183,13 @@ pub struct TargetedProjectile {
     pub target: Entity,
     pub target_pos: Vector2,
     pub contact_dist: f32,
+    pub poison_option: Option<SlowPoisonAttack>,
     pub originating_weapon: ProjectileWeapon,
+}
+
+#[derive(Component)]
+pub struct Channeling {
+    pub duration: f32,
 }
 
 #[derive(Component)]
@@ -122,10 +202,28 @@ pub struct AttackTargetDirective {
     pub target: Entity,
 }
 
+#[derive(Component)]
+pub struct CleanseAllyDirective {
+    pub target: Entity,
+}
+
+#[derive(Component)]
+pub struct HealAllyDirective {
+    pub target: Entity,
+}
+
 #[derive(Clone, Debug)]
 pub enum Weapon {
     Melee(MeleeWeapon),
     Projectile(ProjectileWeapon),
+    Radius(RadiusWeapon),
+}
+
+#[derive(Debug, Clone)]
+pub enum UnitAbility {
+    Cleanse(CleanseAbility),
+    SlowPoison(SlowPoisonAttack),
+    Heal(HealAbility),
 }
 
 #[derive(Component)]
@@ -136,7 +234,27 @@ pub struct Attacking {
 }
 
 #[derive(Component)]
+pub struct Casting {
+    pub ability: UnitAbility,
+    pub target: Entity,
+    pub channeling_time: f32,
+}
+
+#[derive(Clone, Copy, Component)]
+pub struct Armor {
+    pub armor: f32,
+}
+
+#[derive(Clone, Copy, Component)]
+pub struct MagicArmor {
+    pub percent_resist: f32,
+}
+
+#[derive(Component)]
 pub struct AttackEnemyBehavior {}
+
+#[derive(Component)]
+pub struct HealAllyBehavior {}
 
 pub fn execute_attack_target_directive(
     mut commands: Commands,
@@ -148,12 +266,13 @@ pub fn execute_attack_target_directive(
             &Radius,
             Option<&mut MeleeWeapon>,
             Option<&mut ProjectileWeapon>,
+            Option<&mut RadiusWeapon>,
         ),
-        Without<Stunned>,
+        (Without<Channeling>, Without<Stunned>)
     >,
     mut target: Query<(&Position, &Radius)>,
 ) {
-    for (entity, directive, position, radius, melee_option, projectile_option) in query.iter_mut() {
+    for (entity, directive, position, radius, melee_option, projectile_option, radius_weapon_option) in query.iter_mut() {
         if let Ok((position2, radius2)) = target.get_mut(directive.target) {
             if let Some(mut weapon) = melee_option {
                 if true_distance(position.pos, position2.pos, radius.r, radius2.r) < weapon.range {
@@ -165,7 +284,7 @@ pub fn execute_attack_target_directive(
                         });
                         commands
                             .entity(entity)
-                            .insert(Stunned {
+                            .insert(Channeling {
                                 duration: weapon.full_swing_time,
                             })
                             .insert(Attacking {
@@ -187,11 +306,33 @@ pub fn execute_attack_target_directive(
                         });
                         commands
                             .entity(entity)
-                            .insert(Stunned {
+                            .insert(Channeling {
                                 duration: weapon.full_swing_time,
                             })
                             .insert(Attacking {
                                 weapon: Weapon::Projectile(weapon.clone()),
+                                target: directive.target,
+                                channeling_time: 0.0,
+                            });
+                        weapon.time_until_weapon_cooled = weapon.cooldown_time;
+                    }
+                }
+            }
+            if let Some(mut weapon) = radius_weapon_option {
+                if true_distance(position.pos, position2.pos, radius.r, radius2.r) < weapon.range {
+                    if weapon.time_until_weapon_cooled <= 0.0 {
+                        // Melee Attack
+                        commands.entity(entity).insert(PlayAnimationDirective {
+                            animation_name: "attack".to_string(),
+                            is_one_shot: true,
+                        });
+                        commands
+                            .entity(entity)
+                            .insert(Channeling {
+                                duration: weapon.full_swing_time,
+                            })
+                            .insert(Attacking {
+                                weapon: Weapon::Radius(weapon.clone()),
                                 target: directive.target,
                                 channeling_time: 0.0,
                             });
@@ -204,14 +345,193 @@ pub fn execute_attack_target_directive(
     }
 }
 
-pub fn attacking_state(
+pub fn execute_cleanse_ally_directive(
     mut commands: Commands,
-    mut query: Query<(Entity, &mut Attacking, Option<&mut FlippableSprite>)>,
+    mut query: Query<
+        (
+            Entity,
+            &CleanseAllyDirective,
+            &mut CleanseAbility
+        ),
+        (Without<Channeling>, Without<Stunned>)
+    >,
+    mut target: Query<Entity, Or<(With<Stunned>, With<SlowPoisonEffect>)>>,
+) {
+    for (entity, directive, mut cleanse) in query.iter_mut() {
+        if let Ok(_) = target.get_mut(directive.target) {
+            if cleanse.time_until_cleanse_cooled <= 0.0 {
+                // Cleanse
+                commands.entity(entity).insert(PlayAnimationDirective {
+                    animation_name: "cast".to_string(),
+                    is_one_shot: false,
+                });
+                commands
+                    .entity(entity)
+                    .insert(Channeling {
+                        duration: cleanse.swing_time,
+                    })
+                    .insert(Casting {
+                        ability: UnitAbility::Cleanse(cleanse.clone()),
+                        target: directive.target,
+                        channeling_time: 0.0,
+                    });
+                cleanse.time_until_cleanse_cooled = cleanse.cooldown;
+            }
+            commands.entity(entity).remove::<CleanseAllyDirective>();
+        }
+    }
+}
+
+pub fn execute_heal_ally_directive(
+    mut commands: Commands,
+    mut query: Query<
+        (
+            Entity,
+            &HealAllyDirective,
+            &mut HealAbility 
+        ),
+        (Without<Channeling>, Without<Stunned>)
+    >,
+    mut target: Query<Entity>,
+) {
+    for (entity, directive, mut heal) in query.iter_mut() {
+        if let Ok(_) = target.get_mut(directive.target) {
+            if heal.time_until_cooled <= 0.0 {
+                // Cleanse
+                commands.entity(entity).insert(PlayAnimationDirective {
+                    animation_name: "cast".to_string(),
+                    is_one_shot: false,
+                });
+                commands
+                    .entity(entity)
+                    .insert(Channeling {
+                        duration: heal.swing_time,
+                    })
+                    .insert(Casting {
+                        ability: UnitAbility::Heal(*heal),
+                        target: directive.target,
+                        channeling_time: 0.0,
+                    });
+                heal.time_until_cooled = heal.cooldown;
+            }
+            commands.entity(entity).remove::<HealAllyDirective>();
+        }
+    }
+}
+
+pub fn casting_state(
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut Casting, Option<&mut FlippableSprite>)>,
     pos_query: Query<&Position>,
-    mut target_query: Query<&mut AppliedDamage>,
+    mut poison_query: Query<(&SlowPoisonEffect, &mut BoidParams)>,
+    mut heal_query: Query<(&Position, &mut Hitpoints)>,
     delta: Res<DeltaPhysics>,
 ) {
-    for (entity, mut attack, flippable_option) in query.iter_mut() {
+    for (entity, mut casting, flippable_option) in query.iter_mut() {
+        let ability_clone = casting.ability.clone();
+        if let UnitAbility::Cleanse(cleanse) = ability_clone {
+            // Impact hit -> apply cleanse 
+            if casting.channeling_time < cleanse.impact_time
+                && casting.channeling_time + delta.seconds >= cleanse.impact_time
+            {
+                // Guardrail against removed entities
+                if let Ok(position) = pos_query.get(casting.target) {
+                    commands.entity(casting.target).remove::<Stunned>();
+                    commands.entity(casting.target).remove::<SlowPoisonEffect>();
+
+                    let mut animated_sprite = AnimatedSprite::default();
+                    animated_sprite.texture = cleanse.effect_texture;
+                    commands
+                        .spawn()
+                        .insert(NewCanvasItemDirective {})
+                        .insert(animated_sprite)
+                        .insert(Position { pos: position.pos })
+                        .insert(ExpirationTimer(1.5))
+                        .insert(ScaleSprite(Vector2 {
+                            x: 0.75,
+                            y: 0.75,
+                        }))
+                        .insert(PlayAnimationDirective {
+                            animation_name: "death".to_string(),
+                            is_one_shot: true,
+                        });
+                }
+
+                if let Ok((poison, mut boid)) = poison_query.get_mut(casting.target) {
+                    boid.max_speed /= poison.effect_originator.speed_multiplier;
+                }
+
+               
+            }
+            // End casting state
+            if casting.channeling_time < cleanse.swing_time
+                && casting.channeling_time + delta.seconds >= cleanse.swing_time
+            {
+                commands.entity(entity).remove::<Casting>();
+                commands.entity(entity).remove::<Channeling>();
+            }
+        }
+
+        if let UnitAbility::Heal(heal) = ability_clone {
+            // Impact hit -> apply heal 
+            if casting.channeling_time < heal.impact_time
+                && casting.channeling_time + delta.seconds >= heal.impact_time
+            {
+                // Guardrail against removed entities
+                if let Ok((position, mut hitpoints)) = heal_query.get_mut(casting.target) {
+
+                    hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp + heal.heal_amount);
+                    let mut animated_sprite = AnimatedSprite::default();
+                    animated_sprite.texture = heal.effect_texture;
+                    commands
+                        .spawn()
+                        .insert(NewCanvasItemDirective {})
+                        .insert(animated_sprite)
+                        .insert(Position { pos: position.pos })
+                        .insert(ExpirationTimer(1.5))
+                        .insert(ScaleSprite(Vector2 {
+                            x: 0.75,
+                            y: 0.75,
+                        }))
+                        .insert(PlayAnimationDirective {
+                            animation_name: "death".to_string(),
+                            is_one_shot: true,
+                        });
+                }
+
+            }
+            // End casting state
+            if casting.channeling_time < heal.swing_time
+                && casting.channeling_time + delta.seconds >= heal.swing_time
+            {
+                commands.entity(entity).remove::<Casting>();
+                commands.entity(entity).remove::<Channeling>();
+            }
+        }
+
+        casting.channeling_time += delta.seconds;
+
+        if let Some(mut flipper) = flippable_option {
+            if let Ok(attacker_pos) = pos_query.get(entity) {
+                if let Ok(target_pos) = pos_query.get(casting.target) {
+                    flipper.is_flipped = attacker_pos.pos.x > target_pos.pos.x;
+                }
+            }
+        }
+    }
+}
+
+pub fn attacking_state(
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut Attacking, Option<&mut FlippableSprite>, Option<&SlowPoisonAttack>)>,
+    mut poisoned_query: Query<&mut SlowPoisonEffect>,
+    mut boid_query: Query<&mut BoidParams>,
+    pos_query: Query<&Position>,
+    mut target_query: Query<&mut AppliedDamage>,
+    mut stunned_query: Query<&mut Channeling>,
+    delta: Res<DeltaPhysics>,
+) {
+    for (entity, mut attack, flippable_option, slow_poison_option) in query.iter_mut() {
         let weapon_clone = attack.weapon.clone();
         if let Weapon::Melee(weapon) = weapon_clone {
             // Impact hit -> apply damage
@@ -222,20 +542,53 @@ pub fn attacking_state(
                     damage_holder.damages.push(DamageInstance {
                         damage: weapon.damage,
                         delay: 0.,
+                        damage_type: DamageType::Normal
                     });
+
+                    if let Some(poison) = slow_poison_option {
+                        if let Ok(mut poison_effect) = poisoned_query.get_mut(attack.target) {
+                            if let Ok(mut boid) = boid_query.get_mut(attack.target) {
+                                (*boid).max_speed /= poison_effect.effect_originator.speed_multiplier;
+                                (*boid).max_speed *= poison.speed_multiplier;
+                                poison_effect.remaining_time = poison.duration;
+                                poison_effect.effect_originator = *poison;
+                            } 
+                        } else {
+                                // Guardrail = damage_holder
+                                commands.entity(attack.target).insert(SlowPoisonEffect{remaining_time: poison.duration, effect_originator: *poison});
+                                if let Ok(mut boid) = boid_query.get_mut(attack.target) {
+                                    boid.max_speed *= poison.speed_multiplier;
+                                }
+                            }
+                    }
+
+                    if weapon.stun_duration > 0.0 {
+                        if let Ok(mut stunned) = stunned_query.get_mut(attack.target) {
+                            stunned.duration = stunned.duration.max(weapon.stun_duration);
+                        } else {
+                            // commands.entity(entity) Panics if entity doesn't exist
+                            // We know it does here because let Ok(damage_holder) returned a value 
+                            commands.entity(attack.target).insert(Stunned{duration: weapon.stun_duration}).insert(PlayAnimationDirective{animation_name: "stun".to_string(), is_one_shot: true});
+                        }
+                    }
                 }
+                
             }
             // End attacking state
             if attack.channeling_time < weapon.full_swing_time
                 && attack.channeling_time + delta.seconds >= weapon.full_swing_time
             {
                 commands.entity(entity).remove::<Attacking>();
-                commands.entity(entity).remove::<Stunned>();
+                commands.entity(entity).remove::<Channeling>();
             }
         } else if let Weapon::Projectile(weapon) = weapon_clone {
             if attack.channeling_time < weapon.impact_time
                 && attack.channeling_time + delta.seconds >= weapon.impact_time
             {
+                let mut poison = None;
+                if let Some(slow_poison) = slow_poison_option {
+                    poison = Some(*slow_poison);
+                }    
                 if let Ok(position) = pos_query.get(entity) {
                     commands
                         .spawn()
@@ -245,7 +598,8 @@ pub fn attacking_state(
                             target: attack.target,
                             target_pos: position.pos,
                             originating_weapon: weapon,
-                            contact_dist: 24.,
+                            contact_dist: 12.,
+                            poison_option: poison 
                         })
                         .insert(NewCanvasItemDirective {})
                         .insert(AnimatedSprite {
@@ -272,7 +626,27 @@ pub fn attacking_state(
                 && attack.channeling_time + delta.seconds >= weapon.full_swing_time
             {
                 commands.entity(entity).remove::<Attacking>();
-                commands.entity(entity).remove::<Stunned>();
+                commands.entity(entity).remove::<Channeling>();
+            }
+        } else if let Weapon::Radius(weapon) = weapon_clone {
+            // Impact hit -> apply damage
+            if attack.channeling_time < weapon.impact_time
+                && attack.channeling_time + delta.seconds >= weapon.impact_time
+            {
+                if let Ok(mut damage_holder) = target_query.get_mut(attack.target) {
+                    damage_holder.damages.push(DamageInstance {
+                        damage: weapon.damage,
+                        delay: 0.,
+                        damage_type: DamageType::Normal
+                    });
+                }
+            }
+            // End attacking state
+            if attack.channeling_time < weapon.full_swing_time
+                && attack.channeling_time + delta.seconds >= weapon.full_swing_time
+            {
+                commands.entity(entity).remove::<Attacking>();
+                commands.entity(entity).remove::<Channeling>();
             }
         }
         attack.channeling_time += delta.seconds;
@@ -294,12 +668,18 @@ pub fn update_targeted_projectiles(
         &mut TargetedProjectile,
         &Position,
         &mut Velocity,
+        Option<&AnimatedSprite>,
         Option<&Renderable>,
+        Option<&ScaleSprite>,
     )>,
     pos_query: Query<&Position>,
+    splash_query: Query<(&Position, &Radius)>,
+    mut poisoned_query: Query<&mut SlowPoisonEffect>,
+    mut boid_query: Query<&mut BoidParams>,
     mut damage_query: Query<&mut AppliedDamage>,
+    spatial: Res<SpatialHashTable>
 ) {
-    for (entity, mut projectile, position, mut velocity, renderable_option) in query.iter_mut() {
+    for (entity, mut projectile, position, mut velocity, animated_sprite_option, renderable_option, scale_option) in query.iter_mut() {
         if let Ok(position_target) = pos_query.get(projectile.target) {
             projectile.target_pos = position_target.pos;
         }
@@ -311,13 +691,74 @@ pub fn update_targeted_projectiles(
                 damage_container.damages.push(DamageInstance {
                     damage: projectile.originating_weapon.damage,
                     delay: 0.0,
+                    damage_type: DamageType::Normal
                 });
             }
+
+            if let Some(poison) = projectile.poison_option {
+                if let Ok(mut poison_effect) = poisoned_query.get_mut(projectile.target) {
+                    if let Ok(mut boid) = boid_query.get_mut(projectile.target) {
+                        (*boid).max_speed /= poison_effect.effect_originator.speed_multiplier;
+                        (*boid).max_speed *= poison.speed_multiplier;
+                        poison_effect.remaining_time = poison.duration;
+                        poison_effect.effect_originator = poison;
+                    } 
+                } else {
+                    // Guardrail against despawned entity
+                    if let Ok(_) = pos_query.get(projectile.target) {
+                        commands.entity(projectile.target).insert(SlowPoisonEffect{remaining_time: poison.duration, effect_originator: poison});
+                        if let Ok(mut boid) = boid_query.get_mut(projectile.target) {
+                            boid.max_speed *= poison.speed_multiplier;
+                        }
+                    }
+               }
+            }
+
+            if projectile.originating_weapon.splash_radius > 0.0 {
+                for spatial_hash in crate::physics::spatial_structures::get_all_spatial_hashes_from_circle(projectile.target_pos, projectile.originating_weapon.splash_radius, spatial.cell_size).iter() {
+                    if let Some(entities) = spatial.table.get(&spatial_hash) {
+                        for entity in entities.iter() {
+                            if *entity == projectile.target { continue; }
+                            if let Ok((target_pos, target_rad)) = splash_query.get(*entity) {
+                                // Unit within splash radius
+                                if true_distance(target_pos.pos, projectile.target_pos, projectile.originating_weapon.splash_radius, target_rad.r) <= 0.0 {
+                                    if let Ok(mut damage_container) = damage_query.get_mut(*entity) {
+                                        damage_container.damages.push(DamageInstance {
+                                            damage: projectile.originating_weapon.damage,
+                                            delay: 0.0,
+                                            damage_type: DamageType::Magic
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+               }
+            }
+
             commands.entity(entity).despawn();
             if let Some(renderable) = renderable_option {
                 commands
                     .spawn()
                     .insert(CleanupCanvasItem(renderable.canvas_item_rid));
+            }
+            if let Some(sprite) = animated_sprite_option {
+                let mut animated_sprite = AnimatedSprite::default();
+                animated_sprite.texture = sprite.texture;
+                let mut scale = ScaleSprite(Vector2::ONE);
+                if let Some(scale_existing) = scale_option {
+                    scale.0 = scale_existing.0;
+                }
+                commands.spawn()
+                    .insert(NewCanvasItemDirective {})
+                    .insert(animated_sprite)
+                    .insert(Position { pos: position.pos })
+                    .insert(ExpirationTimer(1.5))
+                    .insert(PlayAnimationDirective {
+                        animation_name: "death".to_string(),
+                        is_one_shot: true,
+                    }).insert(scale);
+                
             }
         }
     }
@@ -334,7 +775,7 @@ pub fn attack_enemy_behavior(
             Option<&MeleeWeapon>,
             Option<&ProjectileWeapon>,
         ),
-        (With<AttackEnemyBehavior>, Without<Stunned>),
+        (With<AttackEnemyBehavior>, Without<Channeling>, Without<Stunned>),
     >,
     target_query: Query<(&TeamAlignment, &Position, &Radius)>,
     spatial: Res<SpatialNeighborsCache>,
@@ -409,6 +850,75 @@ pub fn attack_enemy_behavior(
     }
 }
 
+pub fn heal_ally_behavior(
+    mut commands: Commands,
+    query: Query<
+        (
+            Entity,
+            &TeamAlignment,
+            Option<&CleanseAbility>,
+            Option<&HealAbility>,
+        ),
+        (With<HealAllyBehavior>, Without<Channeling>, Without<Stunned>),
+    >,
+    cleanse_query: Query<Entity, Or<(With<SlowPoisonEffect>, With<Stunned>)>>,
+    heal_query: Query<(Entity, &Hitpoints)>,
+    target_query: Query<&TeamAlignment>,
+    spatial: Res<SpatialNeighborsCache>,
+) {
+    for (entity, alignment, cleanse_option, heal_option) in query.iter() {
+        if let Some(heal) = heal_option {
+            // Cleanse on cooldown 
+            if heal.time_until_cooled > 0.0 {
+                continue;
+            }
+
+            if let Some(targets) = spatial.get_neighbors(&entity, heal.range) {
+                for target in targets {
+                    if let Ok(alignment_target) =
+                        target_query.get(target)
+                    {
+                        if alignment_target.alignment == alignment.alignment
+                        {
+                            if let Ok((entity_healable, healable)) = heal_query.get(target) {
+                                if healable.hp < healable.max_hp {
+                                    commands
+                                        .entity(entity)
+                                        .insert(HealAllyDirective { target: entity_healable  });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } 
+        if let Some(cleanse) = cleanse_option {
+            if cleanse.time_until_cleanse_cooled > 0.0 {
+                continue;
+            }
+
+            if let Some(targets) = spatial.get_neighbors(&entity, cleanse.range) {
+                for target in targets {
+                    if let Ok(alignment_target) =
+                        target_query.get(target)
+                    {
+                        if alignment_target.alignment == alignment.alignment
+                        {
+                            if let Ok(entity_cleansable) = cleanse_query.get(target) {
+                                commands
+                                    .entity(entity)
+                                    .insert(CleanseAllyDirective { target: entity_cleansable  });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Other spell types
+    }
+}
+
+
 pub fn apply_damages(
     mut commands: Commands,
     mut query: Query<(
@@ -418,10 +928,12 @@ pub fn apply_damages(
         Option<&Position>,
         Option<&Renderable>,
         Option<&AnimatedSprite>,
+        Option<&Armor>,
+        Option<&MagicArmor>,
     )>,
     delta: Res<DeltaPhysics>,
 ) {
-    for (entity, mut damages, mut hitpoints, position_option, renderable_option, sprite_option) in
+    for (entity, mut damages, mut hitpoints, position_option, renderable_option, sprite_option, armor_option, magic_armor_option) in
         query.iter_mut()
     {
         let mut i = 0;
@@ -429,6 +941,15 @@ pub fn apply_damages(
             let mut damage = damages.damages.get_mut(i).unwrap();
             damage.delay -= delta.seconds;
             if damage.delay <= 0.0 {
+                if damage.damage_type == DamageType::Normal {
+                    if let Some(armor) = armor_option {
+                        damage.damage = (damage.damage - armor.armor).max(1.0); 
+                    }
+                } else if damage.damage_type == DamageType::Magic {
+                    if let Some(magic_armor) = magic_armor_option {
+                        damage.damage *= 1. - magic_armor.percent_resist;
+                    }
+                }
                 hitpoints.hp -= damage.damage;
                 damages.damages.remove(i);
             } else {
@@ -476,6 +997,23 @@ pub fn melee_weapon_cooldown(mut query: Query<&mut MeleeWeapon>, delta: Res<Delt
     }
 }
 
+pub fn ability_cooldowns(mut query: Query<(Option<&mut CleanseAbility>, Option<&mut HealAbility>)>, delta: Res<DeltaPhysics>) {
+    for (cleanse_option, heal_option) in query.iter_mut() {
+        if let Some(mut cleanse) = cleanse_option {
+            if cleanse.time_until_cleanse_cooled < 0.0 {
+                continue;
+            }
+            cleanse.time_until_cleanse_cooled -= delta.seconds;
+        } else if let Some(mut heal) = heal_option {
+            if heal.time_until_cooled < 0.0 {
+                continue;
+            }
+            heal.time_until_cooled -= delta.seconds;
+
+        }
+    }
+}
+
 pub fn projectile_weapon_cooldown(
     mut query: Query<&mut ProjectileWeapon>,
     delta: Res<DeltaPhysics>,
@@ -485,6 +1023,19 @@ pub fn projectile_weapon_cooldown(
             continue;
         }
         weapon.time_until_weapon_cooled -= delta.seconds;
+    }
+}
+
+pub fn remove_channeling(
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut Channeling)>,
+    delta: Res<DeltaPhysics>,
+) {
+    for (entity, mut stunned) in query.iter_mut() {
+        stunned.duration -= delta.seconds;
+        if stunned.duration <= 0.0 {
+            commands.entity(entity).remove::<Channeling>();
+        }
     }
 }
 
@@ -500,3 +1051,20 @@ pub fn remove_stuns(
         }
     }
 }
+
+pub fn tick_slow_poison(
+    mut commands: Commands,
+    mut query: Query<(Entity, &mut SlowPoisonEffect, &mut AppliedDamage, &Hitpoints, &mut BoidParams)>,
+    delta: Res<DeltaPhysics>,
+) {
+    for (entity, mut poison, mut damages, hp, mut boid) in query.iter_mut() {
+        poison.remaining_time -= delta.seconds;
+        damages.damages.push(DamageInstance{damage: hp.max_hp * poison.effect_originator.percent_damage * delta.seconds, delay: 0.0, damage_type: DamageType::Poison});
+        if poison.remaining_time <= 0.0 {
+            commands.entity(entity).remove::<SlowPoisonEffect>();
+            boid.max_speed = boid.max_speed / poison.effect_originator.speed_multiplier;          
+        }
+    }
+}
+
+

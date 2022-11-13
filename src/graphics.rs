@@ -1,4 +1,4 @@
-use crate::{physics::*, unit::Stunned};
+use crate::{physics::*, unit::Channeling};
 use bevy_ecs::prelude::*;
 use gdnative::{api::VisualServer, prelude::*};
 
@@ -38,7 +38,7 @@ pub fn update_canvas_items(
         Option<&Velocity>,
         Option<&mut FlippableSprite>,
         Option<&ScaleSprite>,
-        Option<&Stunned>,
+        Option<&Channeling>,
     )>,
 ) {
     for (renderable, position, velocity_option, flippable_option, scale_option, stunned_option) in

@@ -19,7 +19,7 @@ pub struct KiteNearestConductor {
 pub fn kite_conductor(
     mut commands: Commands,
     spatial: Res<SpatialNeighborsCache>,
-    mut query: Query<(Entity, &mut KiteNearestConductor), Without<Stunned>>,
+    mut query: Query<(Entity, &mut KiteNearestConductor), Without<Channeling>>,
 ) {
     for (entity, mut conductor) in query.iter_mut() {
         let neighbors_option = spatial.get_neighbors(&entity, conductor.kiting_boid.kite_radius);

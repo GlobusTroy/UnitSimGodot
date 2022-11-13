@@ -5,7 +5,7 @@ use gdnative::prelude::*;
 
 use crate::{
     physics::{spatial_structures::SpatialHashCell, DeltaPhysics},
-    unit::TeamValue,
+    unit::TeamValue, graphics::CleanupCanvasItem,
 };
 
 #[derive(Component)]
@@ -13,13 +13,16 @@ pub struct ExpirationTimer(pub f32);
 
 pub fn expire_entities(
     mut commands: Commands,
-    mut query: Query<(Entity, &mut ExpirationTimer)>,
+    mut query: Query<(Entity, &mut ExpirationTimer, Option<&crate::graphics::Renderable>)>,
     delta: Res<DeltaPhysics>,
 ) {
-    for (entity, mut timer) in query.iter_mut() {
+    for (entity, mut timer, render_option) in query.iter_mut() {
         timer.0 -= delta.seconds;
         if timer.0 < 0.0 {
             commands.entity(entity).despawn();
+            if let Some(renderable) = render_option {
+                commands.spawn().insert(CleanupCanvasItem(renderable.canvas_item_rid));
+            } 
         }
     }
 }

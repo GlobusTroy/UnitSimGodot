@@ -9,7 +9,6 @@ mod graphics;
 use graphics::*;
 
 mod unit;
-use graphics::particles::NewParticleEffectDirective;
 use unit::*;
 
 mod physics;
@@ -52,10 +51,14 @@ impl ECSWorld {
             "integrate_physics",
             SystemStage::parallel()
                 .with_system(physics::physics_integrate)
+                .with_system(remove_channeling)
                 .with_system(remove_stuns)
                 .with_system(melee_weapon_cooldown)
+                .with_system(ability_cooldowns)
                 .with_system(projectile_weapon_cooldown)
                 .with_system(attacking_state)
+                .with_system(tick_slow_poison)
+                .with_system(casting_state)
                 .with_system(apply_damages)
                 .with_system(expire_entities),
         );
@@ -90,7 +93,8 @@ impl ECSWorld {
         let mut schedule_behavior = Schedule::default();
         schedule_behavior.add_stage(
             "conductors",
-            SystemStage::parallel().with_system(kite_conductor),
+            SystemStage::parallel().with_system(kite_conductor)
+                .with_system(unit::heal_ally_behavior)
         );
         schedule_behavior.add_stage(
             "behavior+boid_steer",
@@ -103,14 +107,17 @@ impl ECSWorld {
                 .with_system(vector_alignment_boid)
                 .with_system(charge_at_enemy_boid)
                 .with_system(kite_enemies_boid)
-                .with_system(attack_enemy_behavior)
-                .with_system(update_targeted_projectiles),
+                .with_system(unit::update_targeted_projectiles)
+                .with_system(unit::attack_enemy_behavior)
+                .with_system(execute_cleanse_ally_directive)
+                .with_system(execute_heal_ally_directive)
         );
         schedule_behavior.add_stage(
             "execute_directives+boid_normalize",
             SystemStage::parallel()
                 .with_system(boid_apply_params)
                 .with_system(execute_attack_target_directive)
+                
                 .with_system(animation::execute_play_animation_directive),
         );
 
@@ -190,9 +197,11 @@ impl ECSWorld {
         mass: f32,
         movespeed: f32,
         acceleration: f32,
+        armor: f32,
+        magic_resist: f32,
     ) -> usize {
         let blueprint =
-            UnitBlueprint::new(texture, hitpoints, radius, mass, movespeed, acceleration);
+            UnitBlueprint::new(texture, hitpoints, radius, mass, movespeed, acceleration, armor, magic_resist);
         self.unit_blueprints.push(blueprint);
         return self.unit_blueprints.len() - 1;
     }
@@ -206,6 +215,7 @@ impl ECSWorld {
         cooldown: f32,
         impact_time: f32,
         swing_time: f32,
+        stun_duration: f32,
     ) {
         let weapon = Weapon::Melee(MeleeWeapon {
             damage: damage,
@@ -214,11 +224,82 @@ impl ECSWorld {
             impact_time: impact_time,
             full_swing_time: swing_time,
             time_until_weapon_cooled: 0.0,
+            stun_duration: stun_duration
         });
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_weapon(weapon);
         }
     }
+
+    #[method]
+    fn add_slow_poison_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        percent_damage: f32,
+        duration: f32,
+        movement_multiplier: f32
+    ) {
+        let poison = SlowPoisonAttack{percent_damage: percent_damage, duration: duration, speed_multiplier: movement_multiplier};
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::SlowPoison(poison));
+        }
+    }
+
+    #[method]
+    fn add_cleanse_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        range: f32,
+        cooldown: f32,
+        impact_time: f32,
+        swing_time: f32,
+        effect_texture: Rid, 
+    ) {
+        let cleanse_ability = CleanseAbility{range: range, cooldown: cooldown, impact_time: impact_time, swing_time: swing_time, time_until_cleanse_cooled:0.0, effect_texture: effect_texture}; 
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Cleanse(cleanse_ability));
+        }
+    }
+
+    #[method]
+    fn add_heal_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        heal_amount: f32,
+        range: f32,
+        cooldown: f32,
+        impact_time: f32,
+        swing_time: f32,
+        effect_texture: Rid, 
+    ) {
+        let heal_ability = HealAbility{heal_amount: heal_amount, range: range, cooldown: cooldown, impact_time: impact_time, swing_time: swing_time, time_until_cooled:0.0, effect_texture: effect_texture}; 
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Heal(heal_ability));
+        }
+    }
+
+    // #[method]
+    // fn add_radius_weapon_to_blueprint(
+    //     &mut self,
+    //     blueprint_id: usize,
+    //     damage: f32,
+    //     range: f32,
+    //     cooldown: f32,
+    //     impact_time: f32,
+    //     swing_time: f32,
+    // ) {
+    //     let weapon = Weapon::Melee(RadiusWeapon {
+    //         damage: damage,
+    //         range: range,
+    //         cooldown_time: cooldown,
+    //         impact_time: impact_time,
+    //         full_swing_time: swing_time,
+    //         time_until_weapon_cooled: 0.0,
+    //     });
+    //     if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+    //         blueprint.add_weapon(weapon);
+    //     }
+    // }
 
     #[method]
     fn add_projectile_weapon_to_blueprint(
@@ -232,6 +313,7 @@ impl ECSWorld {
         projectile_speed: f32,
         projectile_scale: f32,
         projectile_texture_rid: Rid,
+        splash_radius: f32,
     ) {
         let weapon = Weapon::Projectile(ProjectileWeapon {
             damage: damage,
@@ -243,6 +325,7 @@ impl ECSWorld {
             projectile_speed: projectile_speed,
             projectile_scale: projectile_scale,
             projectile_texture: projectile_texture_rid,
+            splash_radius: splash_radius,
         });
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_weapon(weapon);
@@ -297,15 +380,16 @@ impl ECSWorld {
     #[method]
     fn spawn_unit(&mut self, team_id: usize, position: Vector2, blueprint_id: usize) -> u32 {
         let blueprint = self.unit_blueprints.get(blueprint_id).unwrap();
-        let visual_server = unsafe { VisualServer::godot_singleton() };
-        let canvas_item_rid = visual_server.canvas_item_create();
-        unsafe {
-            visual_server.canvas_item_set_parent(canvas_item_rid, self.canvas_item);
-        };
+        // let visual_server = unsafe { VisualServer::godot_singleton() };
+        // let canvas_item_rid = visual_server.canvas_item_create();
+        // unsafe {
+        //     visual_server.canvas_item_set_parent(canvas_item_rid, self.canvas_item);
+        // };
 
         let ent = self
             .world
             .spawn()
+            .insert(NewCanvasItemDirective{})
             .insert(TeamAlignment {
                 alignment: TeamValue::Team(team_id),
             })
@@ -333,10 +417,10 @@ impl ECSWorld {
             })
             .insert(AvoidWallsBoid {
                 avoidance_radius: 4.,
-                multiplier: 2.,
+                multiplier: 6.,
                 cell_size_multiplier: 0.55,
             })
-            .insert(StoppingBoid { multiplier: 10. })
+            .insert(StoppingBoid { multiplier: 20. })
             .insert(SeekEnemiesBoid { multiplier: 1. })
             .insert(AppliedBoidForces(Vector2::ZERO))
             .insert(AppliedForces(Vector2::ZERO))
@@ -359,12 +443,14 @@ impl ECSWorld {
                 is_flipped: false,
                 flip_speed: 2.,
             })
-            .insert(Renderable {
-                canvas_item_rid: canvas_item_rid,
-            })
+            // .insert(Renderable {
+            //     canvas_item_rid: canvas_item_rid,
+            // })
             .insert(AppliedDamage {
                 damages: Vec::new(),
             })
+            .insert(Armor{armor: blueprint.armor})
+            .insert(MagicArmor{percent_resist: blueprint.magic_resist})
             .insert(AttackEnemyBehavior {})
             .insert(Hitpoints {
                 max_hp: blueprint.hitpoints,
@@ -379,6 +465,8 @@ impl ECSWorld {
                     .entity_mut(ent)
                     .insert(*melee_weapon)
                     .insert(ChargeAtEnemyBoid {
+                        target: None,
+                        target_timer: 0.0,
                         charge_radius: melee_weapon.range * 3.,
                         multiplier: 5.,
                     })
@@ -400,6 +488,15 @@ impl ECSWorld {
             }
         }
 
+        for spell in blueprint.abilities.iter() {
+            if let UnitAbility::Cleanse(cleanse) = spell {
+                self.world.entity_mut(ent).insert(*cleanse).insert(HealAllyBehavior{});
+            } else if let UnitAbility::SlowPoison(poison) = spell {
+                self.world.entity_mut(ent).insert(*poison);
+            } else if let UnitAbility::Heal(heal) = spell {
+                self.world.entity_mut(ent).insert(*heal).insert(HealAllyBehavior{});
+            }
+        }
         return ent.id();
     }
 
@@ -464,6 +561,12 @@ impl ECSWorld {
     //             .remove::<NewParticleEffectDirective>();
     //     }
     // }
+    #[method]
+    fn _process_in_place(&mut self) {
+        self.world.insert_resource(Delta { seconds: 0f32 });
+        self._process_new_canvas_items();
+        self.schedule.run(&mut self.world);
+    }
 
     #[method]
     #[profiled]
@@ -508,6 +611,9 @@ impl ECSWorld {
             debug_draw::draw_flow_field(self, base);
         }
     }
+
+    #[method]
+    fn _init(&mut self) { }
 }
 
 fn init(handle: InitHandle) {

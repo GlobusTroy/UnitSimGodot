@@ -147,6 +147,8 @@ pub fn animate_sprites(
         Option<&Radius>,
         Option<&TeamAlignment>,
         Option<&Hitpoints>,
+        Option<&crate::unit::SlowPoisonEffect>,
+        Option<&crate::unit::Stunned>,
     )>,
     delta: Res<Delta>,
     library: Res<AnimationLibrary>,
@@ -159,6 +161,8 @@ pub fn animate_sprites(
         radius_option,
         alignment_option,
         hitpoints_option,
+        poison_option,
+        stunned_option,
     ) in query.iter_mut()
     {
         //Animate
@@ -168,7 +172,6 @@ pub fn animate_sprites(
             sprite.animation_time_since_change -= time_per_frame;
             sprite.animation_index += 1;
         }
-
         
 
         if sprite.is_one_shot && sprite.animation_index >= sprite.animation_length {
@@ -261,17 +264,20 @@ pub fn animate_sprites(
                 }
             }
 
+            let mut color = Color{ r:1., g:1., b:1., a:1.};
+            if let Some(_) = stunned_option {
+                color.b = 0.;
+            }
+            if let Some(_) = poison_option {
+                color.r = 0.;
+                color.b = 0.;
+            }
             server.canvas_item_add_texture_rect_region(
                 renderable.canvas_item_rid,
                 self_rect,
                 sprite.texture,
                 rect,
-                Color {
-                    r: 1.,
-                    g: 1.,
-                    b: 1.,
-                    a: 1.,
-                },
+                color,
                 false,
                 Rid::default(),
                 false,

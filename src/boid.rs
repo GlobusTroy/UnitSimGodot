@@ -1,7 +1,7 @@
 use crate::{
     graphics::animation::PlayAnimationDirective,
     physics::{self, spatial_structures::*, *},
-    unit::{ProjectileWeapon, Stunned, TeamAlignment, TeamValue},
+    unit::{ProjectileWeapon, Channeling, TeamAlignment, TeamValue, Stunned},
     util::{get_point_spatial_hash, get_spatial_team_value, normalized_or_zero, true_distance},
 };
 use bevy_ecs::prelude::*;
@@ -58,6 +58,8 @@ pub struct VectorAlignmentBoid {
 pub struct ChargeAtEnemyBoid {
     pub charge_radius: f32,
     pub multiplier: f32,
+    pub target: Option<Entity>,
+    pub target_timer: f32,
 }
 
 #[derive(Component, Clone, Copy)]
@@ -186,43 +188,49 @@ pub fn charge_at_enemy_boid(
             Entity,
             &mut AppliedBoidForces,
             &BoidParams,
-            &ChargeAtEnemyBoid,
+            &mut ChargeAtEnemyBoid,
             &TeamAlignment,
             &Position,
             &Radius,
             &Velocity,
         ),
-        Without<Stunned>,
+        (Without<Channeling>, Without<Stunned>),
     >,
-    target_query: Query<(&TeamAlignment, &Position, &Radius)>,
+    target_query: Query<(Entity, &TeamAlignment, &Position, &Radius)>,
     spatial: Res<SpatialNeighborsCache>,
+    delta: Res<DeltaPhysics>,
 ) {
-    for (entity, mut forces, params, boid, alignment, position, radius, velocity) in
+    for (entity, mut forces, params, mut boid, alignment, position, radius, velocity) in
         query.iter_mut()
     {
-        if let Some(neighbors) = spatial.get_neighbors(&entity, boid.charge_radius) {
-            let mut min_distance = f32::MAX;
-            let mut min_pos = position.pos;
-            for neighbor in neighbors {
-                if let Ok((alignment2, position2, radius2)) = target_query.get(neighbor) {
-                    if alignment2.alignment != TeamValue::NeutralPassive
-                        && alignment.alignment != alignment2.alignment
-                    {
-                        let distance =
-                            true_distance(position.pos, position2.pos, radius.r, radius2.r);
-                        if distance < min_distance {
-                            min_distance = distance;
-                            min_pos = position2.pos;
+        boid.target_timer += delta.seconds;
+        if boid.target_timer >= 0.1 {
+            boid.target_timer = 0.0;
+            if let Some(neighbors) = spatial.get_neighbors(&entity, boid.charge_radius) {
+                let mut min_distance = f32::MAX;
+                for neighbor in neighbors {
+                    if let Ok((ent_target, alignment2, position2, radius2)) = target_query.get(neighbor) {
+                        if alignment2.alignment != TeamValue::NeutralPassive
+                            && alignment.alignment != alignment2.alignment
+                        {
+                            let distance =
+                                true_distance(position.pos, position2.pos, radius.r, radius2.r);
+                            if distance < min_distance {
+                                min_distance = distance;
+                                boid.target = Some(ent_target);
+                            }
                         }
                     }
                 }
             }
-            if min_distance == f32::MAX {
-                continue;
+        }  
+
+        if let Some(target) = boid.target {
+            if let Ok((_,_,position_target,_)) = target_query.get(target) {
+                let desired_velocity = normalized_or_zero(position_target.pos - position.pos) * params.max_speed;
+                let force = normalized_or_zero(desired_velocity - velocity.v) * params.max_force;
+                forces.0 += force * boid.multiplier;
             }
-            let desired_velocity = normalized_or_zero(min_pos - position.pos) * params.max_speed;
-            let force = normalized_or_zero(desired_velocity - velocity.v) * params.max_force;
-            forces.0 += force * boid.multiplier;
         }
     }
 }
@@ -237,7 +245,7 @@ pub fn seek_enemies_boid(
             &Position,
             &Velocity,
         ),
-        Without<Stunned>,
+        (Without<Channeling>, Without<Stunned>)
     >,
     flow_field: Res<FlowFieldsTowardsEnemies>,
 ) {
@@ -268,7 +276,7 @@ pub fn vector_alignment_boid(
             &TeamAlignment,
             &Velocity,
         ),
-        Without<Stunned>,
+        (Without<Channeling>, Without<Stunned>),
     >,
     inner_query: Query<(&TeamAlignment, &Velocity, &Mass)>,
     spatial: Res<SpatialNeighborsCache>,
@@ -306,7 +314,7 @@ pub fn cohesion_boid(
             &Position,
             &Velocity,
         ),
-        Without<Stunned>,
+        (Without<Channeling>, Without<Stunned>)
     >,
     inner_query: Query<(&TeamAlignment, &Position, &Mass)>,
     spatial: Res<SpatialNeighborsCache>,
@@ -348,7 +356,7 @@ pub fn stopping_boid(
             &StoppingBoid,
             &Velocity,
         ),
-        With<Stunned>,
+        Or<(With<Channeling>, With<Stunned>)>,
     >,
     delta: Res<DeltaPhysics>,
 ) {
@@ -419,7 +427,7 @@ pub fn separation_boid(
             &Velocity,
             &Radius,
         ),
-        Without<Stunned>,
+        (Without<Channeling>, Without<Stunned>)
     >,
     inner_query: Query<(Entity, &TeamAlignment, &Position, &Radius), With<Mass>>,
     spatial: Res<physics::spatial_structures::SpatialNeighborsCache>,
