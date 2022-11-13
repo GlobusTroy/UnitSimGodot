@@ -1,6 +1,8 @@
 use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
+pub mod abilities;
+
 use crate::{
     graphics::{
         animation::{AnimatedSprite, PlayAnimationDirective},
@@ -11,6 +13,8 @@ use crate::{
     },
     util::{normalized_or_zero, true_distance, ExpirationTimer}, boid::BoidParams,
 };
+
+use self::abilities::{*};
 
 #[derive(Debug, Clone)]
 pub struct UnitBlueprint {
@@ -90,7 +94,7 @@ pub enum DamageType {
     Magic,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Component)]
 pub struct DamageInstance {
     pub damage: f32,
     pub delay: f32,
@@ -100,36 +104,6 @@ pub struct DamageInstance {
 #[derive(Component)]
 pub struct AppliedDamage {
     pub damages: Vec<DamageInstance>,
-}
-
-#[derive(Component, Debug, Clone, Copy)]
-pub struct CleanseAbility {
-    pub range: f32,
-    pub cooldown: f32,
-    pub swing_time: f32,
-    pub impact_time: f32,
-    pub effect_texture: Rid,
-
-    pub time_until_cleanse_cooled: f32,
-}
-
-#[derive(Debug, Component, Clone, Copy)]
-pub struct HealAbility {
-    pub heal_amount: f32,
-    pub range: f32,
-    pub cooldown: f32,
-    pub swing_time: f32,
-    pub impact_time: f32,
-    pub effect_texture: Rid,
-
-    pub time_until_cooled: f32,
-}
-
-#[derive(Component, Debug, Clone, Copy)]
-pub struct SlowPoisonAttack{
-    pub duration: f32,
-    pub percent_damage: f32,
-    pub speed_multiplier: f32,
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -149,6 +123,7 @@ pub struct MeleeWeapon {
 
     pub time_until_weapon_cooled: f32,
     pub stun_duration: f32,
+    pub cleave_degrees: f32,
 }
 
 #[derive(Component, Clone, Debug, Copy)]
@@ -217,13 +192,6 @@ pub enum Weapon {
     Melee(MeleeWeapon),
     Projectile(ProjectileWeapon),
     Radius(RadiusWeapon),
-}
-
-#[derive(Debug, Clone)]
-pub enum UnitAbility {
-    Cleanse(CleanseAbility),
-    SlowPoison(SlowPoisonAttack),
-    Heal(HealAbility),
 }
 
 #[derive(Component)]
@@ -419,107 +387,7 @@ pub fn execute_heal_ally_directive(
     }
 }
 
-pub fn casting_state(
-    mut commands: Commands,
-    mut query: Query<(Entity, &mut Casting, Option<&mut FlippableSprite>)>,
-    pos_query: Query<&Position>,
-    mut poison_query: Query<(&SlowPoisonEffect, &mut BoidParams)>,
-    mut heal_query: Query<(&Position, &mut Hitpoints)>,
-    delta: Res<DeltaPhysics>,
-) {
-    for (entity, mut casting, flippable_option) in query.iter_mut() {
-        let ability_clone = casting.ability.clone();
-        if let UnitAbility::Cleanse(cleanse) = ability_clone {
-            // Impact hit -> apply cleanse 
-            if casting.channeling_time < cleanse.impact_time
-                && casting.channeling_time + delta.seconds >= cleanse.impact_time
-            {
-                // Guardrail against removed entities
-                if let Ok(position) = pos_query.get(casting.target) {
-                    commands.entity(casting.target).remove::<Stunned>();
-                    commands.entity(casting.target).remove::<SlowPoisonEffect>();
 
-                    let mut animated_sprite = AnimatedSprite::default();
-                    animated_sprite.texture = cleanse.effect_texture;
-                    commands
-                        .spawn()
-                        .insert(NewCanvasItemDirective {})
-                        .insert(animated_sprite)
-                        .insert(Position { pos: position.pos })
-                        .insert(ExpirationTimer(1.5))
-                        .insert(ScaleSprite(Vector2 {
-                            x: 0.75,
-                            y: 0.75,
-                        }))
-                        .insert(PlayAnimationDirective {
-                            animation_name: "death".to_string(),
-                            is_one_shot: true,
-                        });
-                }
-
-                if let Ok((poison, mut boid)) = poison_query.get_mut(casting.target) {
-                    boid.max_speed /= poison.effect_originator.speed_multiplier;
-                }
-
-               
-            }
-            // End casting state
-            if casting.channeling_time < cleanse.swing_time
-                && casting.channeling_time + delta.seconds >= cleanse.swing_time
-            {
-                commands.entity(entity).remove::<Casting>();
-                commands.entity(entity).remove::<Channeling>();
-            }
-        }
-
-        if let UnitAbility::Heal(heal) = ability_clone {
-            // Impact hit -> apply heal 
-            if casting.channeling_time < heal.impact_time
-                && casting.channeling_time + delta.seconds >= heal.impact_time
-            {
-                // Guardrail against removed entities
-                if let Ok((position, mut hitpoints)) = heal_query.get_mut(casting.target) {
-
-                    hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp + heal.heal_amount);
-                    let mut animated_sprite = AnimatedSprite::default();
-                    animated_sprite.texture = heal.effect_texture;
-                    commands
-                        .spawn()
-                        .insert(NewCanvasItemDirective {})
-                        .insert(animated_sprite)
-                        .insert(Position { pos: position.pos })
-                        .insert(ExpirationTimer(1.5))
-                        .insert(ScaleSprite(Vector2 {
-                            x: 0.75,
-                            y: 0.75,
-                        }))
-                        .insert(PlayAnimationDirective {
-                            animation_name: "death".to_string(),
-                            is_one_shot: true,
-                        });
-                }
-
-            }
-            // End casting state
-            if casting.channeling_time < heal.swing_time
-                && casting.channeling_time + delta.seconds >= heal.swing_time
-            {
-                commands.entity(entity).remove::<Casting>();
-                commands.entity(entity).remove::<Channeling>();
-            }
-        }
-
-        casting.channeling_time += delta.seconds;
-
-        if let Some(mut flipper) = flippable_option {
-            if let Ok(attacker_pos) = pos_query.get(entity) {
-                if let Ok(target_pos) = pos_query.get(casting.target) {
-                    flipper.is_flipped = attacker_pos.pos.x > target_pos.pos.x;
-                }
-            }
-        }
-    }
-}
 
 pub fn attacking_state(
     mut commands: Commands,
@@ -527,8 +395,10 @@ pub fn attacking_state(
     mut poisoned_query: Query<&mut SlowPoisonEffect>,
     mut boid_query: Query<&mut BoidParams>,
     pos_query: Query<&Position>,
+    alignment_query: Query<&TeamAlignment>,
     mut target_query: Query<&mut AppliedDamage>,
     mut stunned_query: Query<&mut Channeling>,
+    spatial: Res<SpatialNeighborsCache>,
     delta: Res<DeltaPhysics>,
 ) {
     for (entity, mut attack, flippable_option, slow_poison_option) in query.iter_mut() {
@@ -538,37 +408,76 @@ pub fn attacking_state(
             if attack.channeling_time < weapon.impact_time
                 && attack.channeling_time + delta.seconds >= weapon.impact_time
             {
-                if let Ok(mut damage_holder) = target_query.get_mut(attack.target) {
-                    damage_holder.damages.push(DamageInstance {
-                        damage: weapon.damage,
-                        delay: 0.,
-                        damage_type: DamageType::Normal
-                    });
 
-                    if let Some(poison) = slow_poison_option {
-                        if let Ok(mut poison_effect) = poisoned_query.get_mut(attack.target) {
-                            if let Ok(mut boid) = boid_query.get_mut(attack.target) {
-                                (*boid).max_speed /= poison_effect.effect_originator.speed_multiplier;
-                                (*boid).max_speed *= poison.speed_multiplier;
-                                poison_effect.remaining_time = poison.duration;
-                                poison_effect.effect_originator = *poison;
-                            } 
-                        } else {
-                                // Guardrail = damage_holder
-                                commands.entity(attack.target).insert(SlowPoisonEffect{remaining_time: poison.duration, effect_originator: *poison});
-                                if let Ok(mut boid) = boid_query.get_mut(attack.target) {
-                                    boid.max_speed *= poison.speed_multiplier;
-                                }
+                let mut swinger_pos = Vector2::ZERO;
+                if let Ok(swinger_position) = pos_query.get(entity) {
+                    swinger_pos = swinger_position.pos;
+                }
+
+                let mut main_target_pos = Vector2::ZERO;
+                if let Ok(target_position) = pos_query.get(attack.target) {
+                    main_target_pos = target_position.pos;
+                }
+
+                let mut alignment = TeamValue::NeutralHostile;
+                if let Ok(swinger_alignment) = alignment_query.get(entity) {
+                    alignment = swinger_alignment.alignment;
+                }
+
+                let vec_to_main_target = swinger_pos.direction_to(main_target_pos);
+
+
+                let mut targets = vec![attack.target];
+                if let Some(neighbors) = spatial.get_neighbors(&entity, weapon.range) {
+                    for neighbor in neighbors.iter() {
+                        if *neighbor == entity { continue;}
+                        if *neighbor == attack.target { continue;}
+                        if let Ok(team_alignment_target) = alignment_query.get(*neighbor) {
+                            if team_alignment_target.alignment == alignment { continue; }
+                        }
+                        if let Ok(neighbor_position) = pos_query.get(*neighbor) {
+                            let vec_to_neighbor = swinger_pos.direction_to(neighbor_position.pos);
+                            if vec_to_main_target.angle_to(vec_to_neighbor).to_degrees() <= weapon.cleave_degrees {
+                                targets.push(*neighbor);
                             }
+                        } 
                     }
+                }
 
-                    if weapon.stun_duration > 0.0 {
-                        if let Ok(mut stunned) = stunned_query.get_mut(attack.target) {
-                            stunned.duration = stunned.duration.max(weapon.stun_duration);
-                        } else {
-                            // commands.entity(entity) Panics if entity doesn't exist
-                            // We know it does here because let Ok(damage_holder) returned a value 
-                            commands.entity(attack.target).insert(Stunned{duration: weapon.stun_duration}).insert(PlayAnimationDirective{animation_name: "stun".to_string(), is_one_shot: true});
+                for target in targets.iter() {
+
+                    if let Ok(mut damage_holder) = target_query.get_mut(*target) {
+                        damage_holder.damages.push(DamageInstance {
+                            damage: weapon.damage,
+                            delay: 0.,
+                            damage_type: DamageType::Normal
+                        });
+
+                        if let Some(poison) = slow_poison_option {
+                            if let Ok(mut poison_effect) = poisoned_query.get_mut(*target) {
+                                if let Ok(mut boid) = boid_query.get_mut(attack.target) {
+                                    (*boid).max_speed /= poison_effect.effect_originator.speed_multiplier;
+                                    (*boid).max_speed *= poison.speed_multiplier;
+                                    poison_effect.remaining_time = poison.duration;
+                                    poison_effect.effect_originator = *poison;
+                                } 
+                            } else {
+                                    // Guardrail = damage_holder
+                                    commands.entity(attack.target).insert(SlowPoisonEffect{remaining_time: poison.duration, effect_originator: *poison});
+                                    if let Ok(mut boid) = boid_query.get_mut(*target) {
+                                        boid.max_speed *= poison.speed_multiplier;
+                                    }
+                                }
+                        }
+
+                        if weapon.stun_duration > 0.0 {
+                            if let Ok(mut stunned) = stunned_query.get_mut(*target) {
+                                stunned.duration = stunned.duration.max(weapon.stun_duration);
+                            } else {
+                                // commands.entity(entity) Panics if entity doesn't exist
+                                // We know it does here because let Ok(damage_holder) returned a value 
+                                commands.entity(*target).insert(Stunned{duration: weapon.stun_duration}).insert(PlayAnimationDirective{animation_name: "stun".to_string(), is_one_shot: true});
+                            }
                         }
                     }
                 }
@@ -717,12 +626,13 @@ pub fn update_targeted_projectiles(
             if projectile.originating_weapon.splash_radius > 0.0 {
                 for spatial_hash in crate::physics::spatial_structures::get_all_spatial_hashes_from_circle(projectile.target_pos, projectile.originating_weapon.splash_radius, spatial.cell_size).iter() {
                     if let Some(entities) = spatial.table.get(&spatial_hash) {
-                        for entity in entities.iter() {
-                            if *entity == projectile.target { continue; }
-                            if let Ok((target_pos, target_rad)) = splash_query.get(*entity) {
+                        for entity_splashed in entities.iter() {
+                            if *entity_splashed == projectile.target { continue; }
+                            if entity.eq(entity_splashed) { continue; }
+                            if let Ok((target_pos, target_rad)) = splash_query.get(*entity_splashed) {
                                 // Unit within splash radius
                                 if true_distance(target_pos.pos, projectile.target_pos, projectile.originating_weapon.splash_radius, target_rad.r) <= 0.0 {
-                                    if let Ok(mut damage_container) = damage_query.get_mut(*entity) {
+                                    if let Ok(mut damage_container) = damage_query.get_mut(*entity_splashed) {
                                         damage_container.damages.push(DamageInstance {
                                             damage: projectile.originating_weapon.damage,
                                             delay: 0.0,

@@ -17,6 +17,11 @@ use physics::collisions::*;
 use physics::spatial_structures::*;
 
 mod util;
+use unit::abilities::UnitAbility;
+use unit::abilities::CleanseAbility;
+use unit::abilities::HealAbility;
+use unit::abilities::MagicMissileAbility;
+use unit::abilities::SlowPoisonAttack;
 use util::expire_entities;
 
 #[derive(NativeClass)]
@@ -56,9 +61,7 @@ impl ECSWorld {
                 .with_system(melee_weapon_cooldown)
                 .with_system(ability_cooldowns)
                 .with_system(projectile_weapon_cooldown)
-                .with_system(attacking_state)
                 .with_system(tick_slow_poison)
-                .with_system(casting_state)
                 .with_system(apply_damages)
                 .with_system(expire_entities),
         );
@@ -95,6 +98,8 @@ impl ECSWorld {
             "conductors",
             SystemStage::parallel().with_system(kite_conductor)
                 .with_system(unit::heal_ally_behavior)
+                .with_system(attacking_state)
+                .with_system(unit::abilities::casting_state)
         );
         schedule_behavior.add_stage(
             "behavior+boid_steer",
@@ -216,6 +221,7 @@ impl ECSWorld {
         impact_time: f32,
         swing_time: f32,
         stun_duration: f32,
+        cleave_degrees: f32,
     ) {
         let weapon = Weapon::Melee(MeleeWeapon {
             damage: damage,
@@ -224,7 +230,8 @@ impl ECSWorld {
             impact_time: impact_time,
             full_swing_time: swing_time,
             time_until_weapon_cooled: 0.0,
-            stun_duration: stun_duration
+            stun_duration: stun_duration,
+            cleave_degrees: cleave_degrees
         });
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_weapon(weapon);
@@ -275,6 +282,23 @@ impl ECSWorld {
         let heal_ability = HealAbility{heal_amount: heal_amount, range: range, cooldown: cooldown, impact_time: impact_time, swing_time: swing_time, time_until_cooled:0.0, effect_texture: effect_texture}; 
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::Heal(heal_ability));
+        }
+    }
+
+    #[method]
+    fn add_magic_missile_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        damage: f32,
+        range: f32,
+        cooldown: f32,
+        impact_time: f32,
+        swing_time: f32,
+        effect_texture: Rid, 
+    ) {
+        let ability = MagicMissileAbility{damage: damage, range: range, cooldown: cooldown, impact_time: impact_time, swing_time: swing_time, time_until_cooled:0.0, effect_texture: effect_texture}; 
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::MagicMissile(ability));
         }
     }
 
@@ -495,6 +519,8 @@ impl ECSWorld {
                 self.world.entity_mut(ent).insert(*poison);
             } else if let UnitAbility::Heal(heal) = spell {
                 self.world.entity_mut(ent).insert(*heal).insert(HealAllyBehavior{});
+            } else if let UnitAbility::MagicMissile(missile) = spell {
+                self.world.entity_mut(ent).insert(*missile).insert(SpatialAwareness {radius: missile.range * 2.});
             }
         }
         return ent.id();
