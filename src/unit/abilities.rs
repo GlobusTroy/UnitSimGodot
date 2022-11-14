@@ -1,10 +1,17 @@
 use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
-use crate::{graphics::{NewCanvasItemDirective, animation::{AnimatedSprite, PlayAnimationDirective}, ScaleSprite, FlippableSprite}, physics::{Position, DeltaPhysics}, util::ExpirationTimer, boid::BoidParams};
+use crate::{
+    boid::BoidParams,
+    graphics::{
+        animation::{AnimatedSprite, PlayAnimationDirective},
+        FlippableSprite, NewCanvasItemDirective, ScaleSprite,
+    },
+    physics::{DeltaPhysics, Position},
+    util::ExpirationTimer,
+};
 
-use super::{Stunned, SlowPoisonEffect, Casting, Channeling, Hitpoints};
-
+use super::{Casting, Channeling, Hitpoints, SlowPoisonDebuff, Stunned};
 
 #[derive(Debug, Clone)]
 pub enum UnitAbility {
@@ -24,7 +31,6 @@ pub struct CleanseAbility {
 
     pub time_until_cleanse_cooled: f32,
 }
-
 
 #[derive(Debug, Component, Clone, Copy)]
 pub struct HealAbility {
@@ -51,32 +57,31 @@ pub struct MagicMissileAbility {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct SlowPoisonAttack{
+pub struct SlowPoisonAttack {
     pub duration: f32,
     pub percent_damage: f32,
     pub speed_multiplier: f32,
 }
 
-
 pub fn casting_state(
     mut commands: Commands,
     mut query: Query<(Entity, &mut Casting, Option<&mut FlippableSprite>)>,
     pos_query: Query<&Position>,
-    mut poison_query: Query<(&SlowPoisonEffect, &mut BoidParams)>,
+    mut poison_query: Query<(&SlowPoisonDebuff, &mut BoidParams)>,
     mut heal_query: Query<(&Position, &mut Hitpoints)>,
     delta: Res<DeltaPhysics>,
 ) {
     for (entity, mut casting, flippable_option) in query.iter_mut() {
         let ability_clone = casting.ability.clone();
         if let super::UnitAbility::Cleanse(cleanse) = ability_clone {
-            // Impact hit -> apply cleanse 
+            // Impact hit -> apply cleanse
             if casting.channeling_time < cleanse.impact_time
                 && casting.channeling_time + delta.seconds >= cleanse.impact_time
             {
                 // Guardrail against removed entities
                 if let Ok(position) = pos_query.get(casting.target) {
                     commands.entity(casting.target).remove::<Stunned>();
-                    commands.entity(casting.target).remove::<SlowPoisonEffect>();
+                    commands.entity(casting.target).remove::<SlowPoisonDebuff>();
 
                     let mut animated_sprite = AnimatedSprite::default();
                     animated_sprite.texture = cleanse.effect_texture;
@@ -86,10 +91,7 @@ pub fn casting_state(
                         .insert(animated_sprite)
                         .insert(Position { pos: position.pos })
                         .insert(ExpirationTimer(1.5))
-                        .insert(ScaleSprite(Vector2 {
-                            x: 0.75,
-                            y: 0.75,
-                        }))
+                        .insert(ScaleSprite(Vector2 { x: 0.75, y: 0.75 }))
                         .insert(PlayAnimationDirective {
                             animation_name: "death".to_string(),
                             is_one_shot: true,
@@ -99,8 +101,6 @@ pub fn casting_state(
                 if let Ok((poison, mut boid)) = poison_query.get_mut(casting.target) {
                     boid.max_speed /= poison.effect_originator.speed_multiplier;
                 }
-
-               
             }
             // End casting state
             if casting.channeling_time < cleanse.swing_time
@@ -112,13 +112,12 @@ pub fn casting_state(
         }
 
         if let super::UnitAbility::Heal(heal) = ability_clone {
-            // Impact hit -> apply heal 
+            // Impact hit -> apply heal
             if casting.channeling_time < heal.impact_time
                 && casting.channeling_time + delta.seconds >= heal.impact_time
             {
                 // Guardrail against removed entities
                 if let Ok((position, mut hitpoints)) = heal_query.get_mut(casting.target) {
-
                     hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp + heal.heal_amount);
                     let mut animated_sprite = AnimatedSprite::default();
                     animated_sprite.texture = heal.effect_texture;
@@ -128,16 +127,12 @@ pub fn casting_state(
                         .insert(animated_sprite)
                         .insert(Position { pos: position.pos })
                         .insert(ExpirationTimer(1.5))
-                        .insert(ScaleSprite(Vector2 {
-                            x: 0.75,
-                            y: 0.75,
-                        }))
+                        .insert(ScaleSprite(Vector2 { x: 0.75, y: 0.75 }))
                         .insert(PlayAnimationDirective {
                             animation_name: "death".to_string(),
                             is_one_shot: true,
                         });
                 }
-
             }
             // End casting state
             if casting.channeling_time < heal.swing_time

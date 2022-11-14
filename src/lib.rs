@@ -12,16 +12,16 @@ mod unit;
 use unit::*;
 
 mod physics;
-use physics::*;
 use physics::collisions::*;
 use physics::spatial_structures::*;
+use physics::*;
 
 mod util;
-use unit::abilities::UnitAbility;
 use unit::abilities::CleanseAbility;
 use unit::abilities::HealAbility;
 use unit::abilities::MagicMissileAbility;
 use unit::abilities::SlowPoisonAttack;
+use unit::abilities::UnitAbility;
 use util::expire_entities;
 
 #[derive(NativeClass)]
@@ -96,10 +96,11 @@ impl ECSWorld {
         let mut schedule_behavior = Schedule::default();
         schedule_behavior.add_stage(
             "conductors",
-            SystemStage::parallel().with_system(kite_conductor)
+            SystemStage::parallel()
+                .with_system(kite_conductor)
                 .with_system(unit::heal_ally_behavior)
                 .with_system(attacking_state)
-                .with_system(unit::abilities::casting_state)
+                .with_system(unit::abilities::casting_state),
         );
         schedule_behavior.add_stage(
             "behavior+boid_steer",
@@ -115,14 +116,13 @@ impl ECSWorld {
                 .with_system(unit::update_targeted_projectiles)
                 .with_system(unit::attack_enemy_behavior)
                 .with_system(execute_cleanse_ally_directive)
-                .with_system(execute_heal_ally_directive)
+                .with_system(execute_heal_ally_directive),
         );
         schedule_behavior.add_stage(
             "execute_directives+boid_normalize",
             SystemStage::parallel()
                 .with_system(boid_apply_params)
                 .with_system(execute_attack_target_directive)
-                
                 .with_system(animation::execute_play_animation_directive),
         );
 
@@ -188,8 +188,13 @@ impl ECSWorld {
 
     #[method]
     fn add_particle_effect(&mut self, effect_name: String, effect_rid: Rid, texture_rid: Rid) {
-        let particle_effect = particles::ParticleEffect{effect_rid: effect_rid, texture_rid: texture_rid};
-        self.particle_library.map.insert(effect_name, particle_effect);
+        let particle_effect = particles::ParticleEffect {
+            effect_rid: effect_rid,
+            texture_rid: texture_rid,
+        };
+        self.particle_library
+            .map
+            .insert(effect_name, particle_effect);
         self.world.insert_resource(self.particle_library.clone());
     }
 
@@ -205,8 +210,16 @@ impl ECSWorld {
         armor: f32,
         magic_resist: f32,
     ) -> usize {
-        let blueprint =
-            UnitBlueprint::new(texture, hitpoints, radius, mass, movespeed, acceleration, armor, magic_resist);
+        let blueprint = UnitBlueprint::new(
+            texture,
+            hitpoints,
+            radius,
+            mass,
+            movespeed,
+            acceleration,
+            armor,
+            magic_resist,
+        );
         self.unit_blueprints.push(blueprint);
         return self.unit_blueprints.len() - 1;
     }
@@ -231,7 +244,7 @@ impl ECSWorld {
             full_swing_time: swing_time,
             time_until_weapon_cooled: 0.0,
             stun_duration: stun_duration,
-            cleave_degrees: cleave_degrees
+            cleave_degrees: cleave_degrees,
         });
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_weapon(weapon);
@@ -244,9 +257,13 @@ impl ECSWorld {
         blueprint_id: usize,
         percent_damage: f32,
         duration: f32,
-        movement_multiplier: f32
+        movement_multiplier: f32,
     ) {
-        let poison = SlowPoisonAttack{percent_damage: percent_damage, duration: duration, speed_multiplier: movement_multiplier};
+        let poison = SlowPoisonAttack {
+            percent_damage: percent_damage,
+            duration: duration,
+            speed_multiplier: movement_multiplier,
+        };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::SlowPoison(poison));
         }
@@ -260,9 +277,16 @@ impl ECSWorld {
         cooldown: f32,
         impact_time: f32,
         swing_time: f32,
-        effect_texture: Rid, 
+        effect_texture: Rid,
     ) {
-        let cleanse_ability = CleanseAbility{range: range, cooldown: cooldown, impact_time: impact_time, swing_time: swing_time, time_until_cleanse_cooled:0.0, effect_texture: effect_texture}; 
+        let cleanse_ability = CleanseAbility {
+            range: range,
+            cooldown: cooldown,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            time_until_cleanse_cooled: 0.0,
+            effect_texture: effect_texture,
+        };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::Cleanse(cleanse_ability));
         }
@@ -277,9 +301,17 @@ impl ECSWorld {
         cooldown: f32,
         impact_time: f32,
         swing_time: f32,
-        effect_texture: Rid, 
+        effect_texture: Rid,
     ) {
-        let heal_ability = HealAbility{heal_amount: heal_amount, range: range, cooldown: cooldown, impact_time: impact_time, swing_time: swing_time, time_until_cooled:0.0, effect_texture: effect_texture}; 
+        let heal_ability = HealAbility {
+            heal_amount: heal_amount,
+            range: range,
+            cooldown: cooldown,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            time_until_cooled: 0.0,
+            effect_texture: effect_texture,
+        };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::Heal(heal_ability));
         }
@@ -294,9 +326,17 @@ impl ECSWorld {
         cooldown: f32,
         impact_time: f32,
         swing_time: f32,
-        effect_texture: Rid, 
+        effect_texture: Rid,
     ) {
-        let ability = MagicMissileAbility{damage: damage, range: range, cooldown: cooldown, impact_time: impact_time, swing_time: swing_time, time_until_cooled:0.0, effect_texture: effect_texture}; 
+        let ability = MagicMissileAbility {
+            damage: damage,
+            range: range,
+            cooldown: cooldown,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            time_until_cooled: 0.0,
+            effect_texture: effect_texture,
+        };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::MagicMissile(ability));
         }
@@ -413,7 +453,7 @@ impl ECSWorld {
         let ent = self
             .world
             .spawn()
-            .insert(NewCanvasItemDirective{})
+            .insert(NewCanvasItemDirective {})
             .insert(TeamAlignment {
                 alignment: TeamValue::Team(team_id),
             })
@@ -473,8 +513,12 @@ impl ECSWorld {
             .insert(AppliedDamage {
                 damages: Vec::new(),
             })
-            .insert(Armor{armor: blueprint.armor})
-            .insert(MagicArmor{percent_resist: blueprint.magic_resist})
+            .insert(Armor {
+                armor: blueprint.armor,
+            })
+            .insert(MagicArmor {
+                percent_resist: blueprint.magic_resist,
+            })
             .insert(AttackEnemyBehavior {})
             .insert(Hitpoints {
                 max_hp: blueprint.hitpoints,
@@ -514,13 +558,24 @@ impl ECSWorld {
 
         for spell in blueprint.abilities.iter() {
             if let UnitAbility::Cleanse(cleanse) = spell {
-                self.world.entity_mut(ent).insert(*cleanse).insert(HealAllyBehavior{});
+                self.world
+                    .entity_mut(ent)
+                    .insert(*cleanse)
+                    .insert(HealAllyBehavior {});
             } else if let UnitAbility::SlowPoison(poison) = spell {
                 self.world.entity_mut(ent).insert(*poison);
             } else if let UnitAbility::Heal(heal) = spell {
-                self.world.entity_mut(ent).insert(*heal).insert(HealAllyBehavior{});
+                self.world
+                    .entity_mut(ent)
+                    .insert(*heal)
+                    .insert(HealAllyBehavior {});
             } else if let UnitAbility::MagicMissile(missile) = spell {
-                self.world.entity_mut(ent).insert(*missile).insert(SpatialAwareness {radius: missile.range * 2.});
+                self.world
+                    .entity_mut(ent)
+                    .insert(*missile)
+                    .insert(SpatialAwareness {
+                        radius: missile.range * 2.,
+                    });
             }
         }
         return ent.id();
@@ -577,7 +632,7 @@ impl ECSWorld {
     //                 let server = VisualServer::godot_singleton();
     //                 let canvas_item_rid = self.canvas_item;
     //                 //server.particles_set_emission_transform(effect.effect_rid, Transform::IDENTITY.translated(Vector3{x:directive.position.x, y:directive.position.y, z:0.}));
-    //                 server.canvas_item_add_particles(canvas_item_rid, effect.effect_rid, effect.texture_rid, Rid::default()); 
+    //                 server.canvas_item_add_particles(canvas_item_rid, effect.effect_rid, effect.texture_rid, Rid::default());
     //             }
     //         }
     //     }
@@ -601,7 +656,6 @@ impl ECSWorld {
             return;
         }
         self.world.insert_resource(Delta { seconds: delta });
-        
 
         self._process_new_canvas_items();
         //self._process_new_particle_effects();
@@ -639,7 +693,7 @@ impl ECSWorld {
     }
 
     #[method]
-    fn _init(&mut self) { }
+    fn _init(&mut self) {}
 }
 
 fn init(handle: InitHandle) {

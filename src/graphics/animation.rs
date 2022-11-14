@@ -99,7 +99,6 @@ impl AnimationLibrary {
     }
 }
 
-
 #[derive(Component, Default)]
 pub struct AnimatedSprite {
     pub texture: Rid,
@@ -147,7 +146,7 @@ pub fn animate_sprites(
         Option<&Radius>,
         Option<&TeamAlignment>,
         Option<&Hitpoints>,
-        Option<&crate::unit::SlowPoisonEffect>,
+        Option<&crate::unit::SlowPoisonDebuff>,
         Option<&crate::unit::Stunned>,
     )>,
     delta: Res<Delta>,
@@ -172,7 +171,6 @@ pub fn animate_sprites(
             sprite.animation_time_since_change -= time_per_frame;
             sprite.animation_index += 1;
         }
-        
 
         if sprite.is_one_shot && sprite.animation_index >= sprite.animation_length {
             if sprite.animation_name == "death".to_string() {
@@ -264,7 +262,12 @@ pub fn animate_sprites(
                 }
             }
 
-            let mut color = Color{ r:1., g:1., b:1., a:1.};
+            let mut color = Color {
+                r: 1.,
+                g: 1.,
+                b: 1.,
+                a: 1.,
+            };
             if let Some(_) = stunned_option {
                 color.b = 0.;
             }

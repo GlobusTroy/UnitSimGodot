@@ -8,13 +8,13 @@ use super::Renderable;
 #[derive(Component, Clone)]
 pub struct NewParticleEffectDirective {
     pub effect_name: String,
-    pub position: Vector2
+    pub position: Vector2,
 }
 
 #[derive(Copy, Clone, Debug)]
 pub struct ParticleEffect {
     pub effect_rid: Rid,
-    pub texture_rid: Rid
+    pub texture_rid: Rid,
 }
 
 #[derive(Debug, Clone)]
