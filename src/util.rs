@@ -22,6 +22,10 @@ pub fn expire_entities(
     delta: Res<DeltaPhysics>,
 ) {
     for (entity, mut timer, render_option) in query.iter_mut() {
+        if timer.0 < 0.0 {
+            commands.entity(entity).remove::<ExpirationTimer>();
+            continue;
+        }
         timer.0 -= delta.seconds;
         if timer.0 < 0.0 {
             commands.entity(entity).despawn();

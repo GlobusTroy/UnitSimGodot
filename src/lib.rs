@@ -56,6 +56,8 @@ impl ECSWorld {
             "integrate_physics",
             SystemStage::parallel()
                 .with_system(physics::physics_integrate)
+                .with_system(actions::resolve_effects)
+                .with_system(actions::action_cooldown)
                 .with_system(remove_channeling)
                 .with_system(remove_stuns)
                 .with_system(melee_weapon_cooldown)
@@ -63,11 +65,13 @@ impl ECSWorld {
                 .with_system(projectile_weapon_cooldown)
                 .with_system(tick_slow_poison)
                 .with_system(apply_damages)
-                .with_system(expire_entities),
+                .with_system(expire_entities)
+                .with_system(actions::resolve_death)
         );
         schedule_physics.add_stage(
             "build_spatial_hash",
-            SystemStage::parallel().with_system(build_spatial_hash_table),
+            SystemStage::parallel().with_system(build_spatial_hash_table)
+                ,
         );
         schedule_physics.add_stage(
             "detect_collisions",
@@ -97,6 +101,10 @@ impl ECSWorld {
         schedule_behavior.add_stage(
             "conductors",
             SystemStage::parallel()
+                .with_system(actions::projectile_homing)
+                .with_system(actions::projectile_contact)
+                .with_system(actions::target_enemies)
+                .with_system(actions::performing_action_state)
                 .with_system(kite_conductor)
                 .with_system(unit::heal_ally_behavior)
                 .with_system(attacking_state)
@@ -125,6 +133,8 @@ impl ECSWorld {
                 .with_system(execute_attack_target_directive)
                 .with_system(animation::execute_play_animation_directive),
         );
+        schedule_behavior.add_stage("death", SystemStage::parallel()
+                );
 
         let mut schedule_logic = Schedule::default();
         schedule_logic.add_stage("physics", schedule_physics);

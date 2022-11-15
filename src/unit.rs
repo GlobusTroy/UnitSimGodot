@@ -893,9 +893,6 @@ pub fn apply_damages(
         Entity,
         &mut AppliedDamage,
         &mut Hitpoints,
-        Option<&Position>,
-        Option<&Renderable>,
-        Option<&AnimatedSprite>,
         Option<&Armor>,
         Option<&MagicArmor>,
     )>,
@@ -905,9 +902,6 @@ pub fn apply_damages(
         entity,
         mut damages,
         mut hitpoints,
-        position_option,
-        renderable_option,
-        sprite_option,
         armor_option,
         magic_armor_option,
     ) in query.iter_mut()
@@ -933,33 +927,7 @@ pub fn apply_damages(
             }
         }
         if hitpoints.hp <= 0.0 {
-            commands.entity(entity).despawn();
-            if let Some(sprite) = sprite_option {
-                if let Some(position) = position_option {
-                    let mut animated_sprite = AnimatedSprite::default();
-                    animated_sprite.texture = sprite.texture;
-                    commands
-                        .spawn()
-                        .insert(NewCanvasItemDirective {})
-                        .insert(animated_sprite)
-                        .insert(Position { pos: position.pos })
-                        .insert(PlayAnimationDirective {
-                            animation_name: "death".to_string(),
-                            is_one_shot: true,
-                        });
-                    // commands
-                    //     .spawn()
-                    //     .insert(NewParticleEffectDirective {
-                    //         effect_name: "deathsplash".to_string(),
-                    //         position: position.pos
-                    //     });
-                }
-            }
-            if let Some(renderable) = renderable_option {
-                commands
-                    .spawn()
-                    .insert(CleanupCanvasItem(renderable.canvas_item_rid));
-            }
+            commands.entity(entity).insert(DeathApproaches{spawn_corpse:true, cleanup_corpse_canvas: false, cleanup_time: -1.0}).remove::<Hitpoints>();
         }
     }
 }

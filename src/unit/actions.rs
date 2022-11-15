@@ -2,13 +2,14 @@ use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
 use crate::{
-    physics::{DeltaPhysics, Position, Radius, Velocity, spatial_structures::SpatialHashTable},
-    util::{normalized_or_zero, true_distance}, graphics::CleanupCanvasItem,
+    graphics::CleanupCanvasItem,
+    physics::{spatial_structures::SpatialHashTable, DeltaPhysics, Position, Radius, Velocity},
+    util::{normalized_or_zero, true_distance, ExpirationTimer},
 };
 
 use super::{
-    abilities::SlowPoisonAttack, Channeling, DamageInstance, SlowPoisonDebuff, StunOnHitEffect,
-    Stunned,
+    abilities::SlowPoisonAttack, Channeling, DamageInstance, Hitpoints, SlowPoisonDebuff,
+    StunOnHitEffect, Stunned, TeamAlignment,
 };
 
 #[derive(Component)]
@@ -20,6 +21,13 @@ pub struct UnitActions {
 #[derive(Component)]
 pub struct ActionEntity {
     pub owner: Entity,
+}
+
+#[derive(Component)]
+pub struct DeathApproaches {
+    pub spawn_corpse: bool,
+    pub cleanup_corpse_canvas: bool,
+    pub cleanup_time: f32,
 }
 
 // Instance of an action occurring, attached to an ActionEntity
@@ -83,6 +91,15 @@ pub struct TargetsEnemies {}
 
 #[derive(Component)]
 pub struct TargetsAllies {}
+
+#[derive(Component)]
+pub struct TargetFlags {
+    ignore_full_health: bool,
+    ignore_no_debuff: bool,
+    ignore_no_buff: bool,
+    target_enemies: bool,
+    target_allies: bool,
+}
 
 #[derive(Component)]
 pub struct ActionRange(pub f32);
@@ -226,21 +243,50 @@ pub fn performing_action_state(
                         // Handle cleave
                         if let Some(cleave) = cleave_option {
                             if let Some(range) = range_option {
-                                for cell in crate::get_all_spatial_hashes_from_circle(position.pos, range.0, spatial.cell_size) {
+                                for cell in crate::get_all_spatial_hashes_from_circle(
+                                    position.pos,
+                                    range.0,
+                                    spatial.cell_size,
+                                ) {
                                     if let Some(potential_targets) = spatial.table.get(&cell) {
                                         let mut already_effected = std::collections::HashSet::new();
                                         already_effected.insert(target.entity);
-                                        if let Ok((original_target_pos, _)) = pos_query.get(target.entity) {
-                                        let to_target = original_target_pos.pos - position.pos;
-                                            for potential_splash_target in potential_targets.iter() {
-                                                if already_effected.contains(potential_splash_target) { continue; }
-                                                if let Ok((splash_target_pos, splash_target_rad)) = pos_query.get(*potential_splash_target) {
-                                                    if true_distance(position.pos, splash_target_pos.pos, radius.r, splash_target_rad.r) <= range.0 {
+                                        if let Ok((original_target_pos, _)) =
+                                            pos_query.get(target.entity)
+                                        {
+                                            let to_target = original_target_pos.pos - position.pos;
+                                            for potential_splash_target in potential_targets.iter()
+                                            {
+                                                if already_effected
+                                                    .contains(potential_splash_target)
+                                                {
+                                                    continue;
+                                                }
+                                                if let Ok((splash_target_pos, splash_target_rad)) =
+                                                    pos_query.get(*potential_splash_target)
+                                                {
+                                                    if true_distance(
+                                                        position.pos,
+                                                        splash_target_pos.pos,
+                                                        radius.r,
+                                                        splash_target_rad.r,
+                                                    ) <= range.0
+                                                    {
+                                                        already_effected
+                                                            .insert(*potential_splash_target);
                                                         // Check for angle
-                                                        let to_cleave = splash_target_pos.pos - position.pos;
-                                                        if to_target.angle_to(to_cleave).to_degrees().abs() <= cleave.angle_degrees {
+                                                        let to_cleave =
+                                                            splash_target_pos.pos - position.pos;
+                                                        if to_target
+                                                            .angle_to(to_cleave)
+                                                            .to_degrees()
+                                                            .abs()
+                                                            <= cleave.angle_degrees
+                                                        {
                                                             // Apply effects to cleave targets
-                                                            if let Ok(mut buffer) = apply_query.get_mut(*potential_splash_target) {
+                                                            if let Ok(mut buffer) = apply_query
+                                                                .get_mut(*potential_splash_target)
+                                                            {
                                                                 for effect in effects.vec.iter() {
                                                                     buffer.vec.push(*effect);
                                                                 }
@@ -279,7 +325,7 @@ pub fn performing_action_state(
     }
 }
 
-fn projectile_homing(
+pub fn projectile_homing(
     mut commands: Commands,
     mut query: Query<(
         &Position,
@@ -298,15 +344,21 @@ fn projectile_homing(
     }
 }
 
-fn projectile_contact(
+pub fn projectile_contact(
     mut commands: Commands,
-    mut query: Query<(Entity, &Position, &Projectile, &ActionProjectileDetails, Option<&Splash>, Option<&crate::graphics::Renderable>)>,
+    mut query: Query<(
+        Entity,
+        &Position,
+        &Projectile,
+        &ActionProjectileDetails,
+        Option<&Splash>,
+    )>,
     mut apply_query: Query<&mut ResolveEffectsBuffer>,
     splash_query: Query<(&Position, &Radius)>,
     origin_effect_query: Query<&OnHitEffects>,
     spatial: Res<SpatialHashTable>,
 ) {
-    for (ent, position, projectile, details, splash_option, render_option) in query.iter_mut() {
+    for (ent, position, projectile, details, splash_option) in query.iter_mut() {
         if position.pos.distance_to(projectile.target_pos) <= details.contact_distance {
             //Apply effects
             if let Ok(mut buffer) = apply_query.get_mut(projectile.target) {
@@ -319,18 +371,35 @@ fn projectile_contact(
 
             // Handle splash
             if let Some(splash) = splash_option {
-                for cell in crate::get_all_spatial_hashes_from_circle(position.pos, splash.radius, spatial.cell_size) {
+                for cell in crate::get_all_spatial_hashes_from_circle(
+                    position.pos,
+                    splash.radius,
+                    spatial.cell_size,
+                ) {
                     if let Some(potential_targets) = spatial.table.get(&cell) {
                         let mut already_effected = std::collections::HashSet::new();
                         already_effected.insert(projectile.target);
 
                         for potential_splash_target in potential_targets.iter() {
-                            if already_effected.contains(potential_splash_target) { continue; }
-                            if let Ok((splash_target_pos, splash_target_rad)) = splash_query.get(*potential_splash_target) {
-                                if true_distance(projectile.target_pos, splash_target_pos.pos, splash.radius, splash_target_rad.r) <= 0.0 {
+                            if already_effected.contains(potential_splash_target) {
+                                continue;
+                            }
+                            if let Ok((splash_target_pos, splash_target_rad)) =
+                                splash_query.get(*potential_splash_target)
+                            {
+                                if true_distance(
+                                    projectile.target_pos,
+                                    splash_target_pos.pos,
+                                    splash.radius,
+                                    splash_target_rad.r,
+                                ) <= 0.0
+                                {
                                     // Apply effects to splash targets
+                                    already_effected.insert(*potential_splash_target);
                                     if let Ok(mut buffer) = apply_query.get_mut(projectile.target) {
-                                        if let Ok(effects) = origin_effect_query.get(projectile.origin_action) {
+                                        if let Ok(effects) =
+                                            origin_effect_query.get(projectile.origin_action)
+                                        {
                                             for effect in effects.vec.iter() {
                                                 buffer.vec.push(*effect);
                                             }
@@ -342,10 +411,59 @@ fn projectile_contact(
                     }
                 }
             }
-            if let Some(renderable) = render_option {
-                commands.spawn().insert(CleanupCanvasItem(renderable.canvas_item_rid));
-            } 
-            commands.entity(ent).despawn();
+            commands.entity(ent).insert(DeathApproaches {
+                spawn_corpse: true,
+                cleanup_corpse_canvas: true,
+                cleanup_time: 1.5,
+            });
+        }
+    }
+}
+
+pub fn resolve_death(
+    mut commands: Commands,
+    query: Query<(
+        Entity,
+        &Position,
+        &DeathApproaches,
+        Option<&crate::graphics::Renderable>,
+        Option<&crate::graphics::animation::AnimatedSprite>,
+        Option<&crate::graphics::ScaleSprite>,
+    )>,
+) {
+    for (ent, position, death, render_option, animated_sprite_option, scale_option) in query.iter() {
+        if death.spawn_corpse {
+            if let Some(sprite) = animated_sprite_option {
+                let mut animated_sprite = crate::graphics::animation::AnimatedSprite::default();
+                animated_sprite.texture = sprite.texture;
+
+
+                // Negative timeout will be ignored and discarded by timeout system
+                let mut timeout = death.cleanup_time;
+                if !death.cleanup_corpse_canvas { timeout = -1.0 }
+
+                let mut scale = crate::graphics::ScaleSprite(Vector2::ONE);
+                if let Some(scale_existing) = scale_option {
+                    scale.0 = scale_existing.0;
+                }
+                commands
+                    .spawn()
+                    .insert(crate::graphics::NewCanvasItemDirective {})
+                    .insert(animated_sprite)
+                    .insert(Position { pos: position.pos })
+                    .insert(ExpirationTimer(timeout))
+                    .insert(crate::graphics::animation::PlayAnimationDirective {
+                        animation_name: "death".to_string(),
+                        is_one_shot: true,
+                    })
+                    .insert(scale);
+            }
+        }
+        commands.entity(ent).despawn();
+        if let Some(renderable) = render_option {
+            commands
+                .spawn()
+                .insert(CleanupCanvasItem(renderable.canvas_item_rid));
         }
     }
 }
@@ -389,15 +507,24 @@ pub fn target_enemies(
     mut commands: Commands,
     caster_query: Query<(Entity, &UnitActions), (Without<Stunned>, Without<PerformingActionState>)>,
     mut action_query: Query<
-        (Entity, &ActionRange, &SwingDetails, &mut TargetEntity),
-        (With<TargetsEnemies>, Without<Cooldown>),
+        (
+            Entity,
+            &ActionRange,
+            &SwingDetails,
+            &mut TargetEntity,
+            &TargetFlags,
+        ),
+        Without<Cooldown>,
     >,
     pos_query: Query<(&Position, &Radius)>,
+    alignment_query: Query<&TeamAlignment>,
+    debuffed_query: Query<Entity, Or<(With<Stunned>, With<SlowPoisonDebuff>)>>,
+    health_query: Query<&Hitpoints>,
     neighbor_cache: Res<crate::physics::spatial_structures::SpatialNeighborsCache>,
 ) {
     for (ent, actions) in caster_query.iter() {
         for action in actions.vec.iter() {
-            if let Ok((action_ent, range, swing_details, mut target_of_action)) =
+            if let Ok((action_ent, range, swing_details, target_of_action, target_flags)) =
                 action_query.get_mut(*action)
             {
                 if let Ok((pos, rad)) = pos_query.get(ent) {
@@ -405,6 +532,35 @@ pub fn target_enemies(
                     let mut cur_target = ent;
                     if let Some(neighbors) = neighbor_cache.get_neighbors(&ent, range.0) {
                         for neighbor in neighbors.iter() {
+                            // Handle alignment target flags
+                            let mut is_ally = false;
+                            if let Ok(target_alignment) = alignment_query.get(*neighbor) {
+                                if let Ok(actor_alignment) = alignment_query.get(ent) {
+                                    if target_alignment.alignment == actor_alignment.alignment {
+                                        is_ally = true;
+                                    }
+                                }
+                            }
+                            if !target_flags.target_allies && is_ally {
+                                continue;
+                            }
+                            if !target_flags.target_enemies && !is_ally {
+                                continue;
+                            }
+
+                            // Handle other target flags
+                            if target_flags.ignore_full_health
+                                && !has_full_health(neighbor, &health_query)
+                            {
+                                continue;
+                            }
+                            if target_flags.ignore_no_debuff
+                                && !has_debuff(neighbor, &debuffed_query)
+                            {
+                                continue;
+                            }
+
+                            // Get nearest target
                             if let Ok((target_pos, target_rad)) = pos_query.get(*neighbor) {
                                 let dist = crate::util::true_distance(
                                     pos.pos,
@@ -419,16 +575,50 @@ pub fn target_enemies(
                             }
                         }
                     }
-                    commands
-                        .entity(ent)
-                        .insert(PerformingActionState { action: action_ent });
-
-                    target_of_action.entity = cur_target;
-                    commands
-                        .entity(action_ent)
-                        .insert(Cooldown(swing_details.cooldown_time));
+                    perform_action(
+                        &mut commands,
+                        ent,
+                        action_ent,
+                        target_of_action,
+                        cur_target,
+                        swing_details,
+                    );
                 }
             }
         }
     }
+}
+
+fn has_debuff(
+    ent: &Entity,
+    debuff_query: &Query<Entity, Or<(With<Stunned>, With<SlowPoisonDebuff>)>>,
+) -> bool {
+    if let Ok(_) = debuff_query.get(*ent) {
+        return true;
+    }
+    return false;
+}
+
+fn has_full_health(ent: &Entity, health_query: &Query<&Hitpoints>) -> bool {
+    if let Ok(hp) = health_query.get(*ent) {
+        return hp.hp == hp.max_hp;
+    }
+    return false;
+}
+
+fn perform_action(
+    commands: &mut Commands,
+    unit_entity: Entity,
+    action_entity: Entity,
+    mut target_of_action: Mut<TargetEntity>,
+    action_target: Entity,
+    swing_details: &SwingDetails,
+) {
+    commands.entity(unit_entity).insert(PerformingActionState {
+        action: action_entity,
+    });
+    target_of_action.entity = action_target;
+    commands
+        .entity(action_entity)
+        .insert(Cooldown(swing_details.cooldown_time));
 }
