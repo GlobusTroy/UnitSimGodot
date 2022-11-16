@@ -22,7 +22,6 @@ use unit::abilities::HealAbility;
 use unit::abilities::MagicMissileAbility;
 use unit::abilities::SlowPoisonAttack;
 use unit::abilities::UnitAbility;
-use util::expire_entities;
 
 #[derive(NativeClass)]
 #[inherit(Node2D)]
@@ -56,22 +55,22 @@ impl ECSWorld {
             "integrate_physics",
             SystemStage::parallel()
                 .with_system(physics::physics_integrate)
-                .with_system(actions::resolve_effects)
+                .with_system(unit::resolve_death)
+                .with_system(effects::resolve_effects)
                 .with_system(actions::action_cooldown)
-                .with_system(remove_channeling)
-                .with_system(remove_stuns)
-                .with_system(melee_weapon_cooldown)
-                .with_system(ability_cooldowns)
-                .with_system(projectile_weapon_cooldown)
+                //.with_system(remove_channeling)
+                //.with_system(remove_stuns)
+                //.with_system(melee_weapon_cooldown)
+                //.with_system(ability_cooldowns)
+                //.with_system(projectile_weapon_cooldown)
                 .with_system(tick_slow_poison)
                 .with_system(apply_damages)
-                .with_system(expire_entities)
-                .with_system(actions::resolve_death)
+                .with_system(util::copy_target_position)
+                .with_system(util::expire_entities),
         );
         schedule_physics.add_stage(
             "build_spatial_hash",
-            SystemStage::parallel().with_system(build_spatial_hash_table)
-                ,
+            SystemStage::parallel().with_system(build_spatial_hash_table),
         );
         schedule_physics.add_stage(
             "detect_collisions",
@@ -101,14 +100,14 @@ impl ECSWorld {
         schedule_behavior.add_stage(
             "conductors",
             SystemStage::parallel()
-                .with_system(actions::projectile_homing)
-                .with_system(actions::projectile_contact)
+                .with_system(projectiles::projectile_homing)
+                .with_system(projectiles::projectile_contact)
                 .with_system(actions::target_enemies)
                 .with_system(actions::performing_action_state)
                 .with_system(kite_conductor)
-                .with_system(unit::heal_ally_behavior)
-                .with_system(attacking_state)
-                .with_system(unit::abilities::casting_state),
+                //.with_system(unit::heal_ally_behavior)
+                //.with_system(attacking_state)
+                //.with_system(unit::abilities::casting_state),
         );
         schedule_behavior.add_stage(
             "behavior+boid_steer",
@@ -121,20 +120,19 @@ impl ECSWorld {
                 .with_system(vector_alignment_boid)
                 .with_system(charge_at_enemy_boid)
                 .with_system(kite_enemies_boid)
-                .with_system(unit::update_targeted_projectiles)
-                .with_system(unit::attack_enemy_behavior)
-                .with_system(execute_cleanse_ally_directive)
-                .with_system(execute_heal_ally_directive),
+                //.with_system(unit::update_targeted_projectiles)
+                //.with_system(unit::attack_enemy_behavior)
+                //.with_system(execute_cleanse_ally_directive)
+                //.with_system(execute_heal_ally_directive),
         );
         schedule_behavior.add_stage(
             "execute_directives+boid_normalize",
             SystemStage::parallel()
                 .with_system(boid_apply_params)
-                .with_system(execute_attack_target_directive)
+                //.with_system(execute_attack_target_directive)
                 .with_system(animation::execute_play_animation_directive),
         );
-        schedule_behavior.add_stage("death", SystemStage::parallel()
-                );
+        schedule_behavior.add_stage("death", SystemStage::parallel());
 
         let mut schedule_logic = Schedule::default();
         schedule_logic.add_stage("physics", schedule_physics);
@@ -454,11 +452,6 @@ impl ECSWorld {
     #[method]
     fn spawn_unit(&mut self, team_id: usize, position: Vector2, blueprint_id: usize) -> u32 {
         let blueprint = self.unit_blueprints.get(blueprint_id).unwrap();
-        // let visual_server = unsafe { VisualServer::godot_singleton() };
-        // let canvas_item_rid = visual_server.canvas_item_create();
-        // unsafe {
-        //     visual_server.canvas_item_set_parent(canvas_item_rid, self.canvas_item);
-        // };
 
         let ent = self
             .world
@@ -516,6 +509,7 @@ impl ECSWorld {
             .insert(FlippableSprite {
                 is_flipped: false,
                 flip_speed: 2.,
+                is_overriding_velocity: false,
             })
             // .insert(Renderable {
             //     canvas_item_rid: canvas_item_rid,
@@ -523,6 +517,7 @@ impl ECSWorld {
             .insert(AppliedDamage {
                 damages: Vec::new(),
             })
+            .insert(effects::ResolveEffectsBuffer { vec: Vec::new() })
             .insert(Armor {
                 armor: blueprint.armor,
             })
@@ -537,11 +532,42 @@ impl ECSWorld {
             .id();
 
         // Insert Weapons
+        let mut unit_actions = actions::UnitActions { vec: Vec::new() };
         for weapon in blueprint.weapons.iter() {
             if let Weapon::Melee(melee_weapon) = weapon {
+                let melee_attack = self
+                    .world
+                    .spawn()
+                    .insert(actions::SwingDetails {
+                        impact_time: melee_weapon.impact_time,
+                        complete_time: melee_weapon.full_swing_time,
+                        cooldown_time: melee_weapon.cooldown_time,
+                    })
+                    .insert(actions::Cleave{angle_degrees: melee_weapon.cleave_degrees})
+                    .insert(actions::OnHitEffects {
+                        vec: vec![effects::Effect::DamageEffect(DamageInstance {
+                            damage: melee_weapon.damage,
+                            delay: 0.0,
+                            damage_type: DamageType::Normal,
+                        })],
+                    })
+                    .insert(actions::ChannelingDetails {
+                        total_time_channeled: 0.0,
+                        effect_applied: false,
+                    })
+                    .insert(actions::ActionRange(melee_weapon.range))
+                    .insert(actions::ActionImpactType(actions::ImpactType::Instant))
+                    .insert(actions::ActionAnimation {
+                        animation_name: "attack".to_string(),
+                    })
+                    .insert(actions::TargetFlags::normal_attack())
+                    .id();
+
+                // Add weapon to unit actions
+                unit_actions.vec.push(melee_attack);
+
                 self.world
                     .entity_mut(ent)
-                    .insert(*melee_weapon)
                     .insert(ChargeAtEnemyBoid {
                         target: None,
                         target_timer: 0.0,
@@ -552,9 +578,45 @@ impl ECSWorld {
                         radius: blueprint.radius + self.terrain_map.cell_size,
                     });
             } else if let Weapon::Projectile(projectile_weapon) = weapon {
+                let projectile_attack = self
+                    .world
+                    .spawn()
+                    .insert(actions::SwingDetails {
+                        impact_time: projectile_weapon.impact_time,
+                        complete_time: projectile_weapon.full_swing_time,
+                        cooldown_time: projectile_weapon.cooldown_time,
+                    })
+                    .insert(projectiles::Splash{radius: projectile_weapon.splash_radius})
+                    .insert(actions::OnHitEffects {
+                        vec: vec![effects::Effect::DamageEffect(DamageInstance {
+                            damage: projectile_weapon.damage,
+                            delay: 0.0,
+                            damage_type: DamageType::Normal,
+                        })],
+                    })
+                    .insert(actions::ChannelingDetails {
+                        total_time_channeled: 0.0,
+                        effect_applied: false,
+                    })
+                    .insert(actions::ActionRange(projectile_weapon.range))
+                    .insert(actions::ActionImpactType(actions::ImpactType::Projectile))
+                    .insert(actions::ActionAnimation {
+                        animation_name: "attack".to_string(),
+                    })
+                    .insert(projectiles::ActionProjectileDetails {
+                        projectile_speed: projectile_weapon.projectile_speed,
+                        projectile_scale: projectile_weapon.projectile_scale,
+                        projectile_texture: projectile_weapon.projectile_texture, 
+                        contact_distance: 12.0 
+                    })
+                    .insert(actions::TargetFlags::normal_attack())
+                    .id();
+
+                // Add weapon to unit actions
+                unit_actions.vec.push(projectile_attack);
                 self.world
                     .entity_mut(ent)
-                    .insert(*projectile_weapon)
+                    //.insert(*projectile_weapon)
                     .insert(KiteNearestEnemyBoid {
                         multiplier: 5.,
                         kite_radius: projectile_weapon.range,
@@ -573,7 +635,11 @@ impl ECSWorld {
                     .insert(*cleanse)
                     .insert(HealAllyBehavior {});
             } else if let UnitAbility::SlowPoison(poison) = spell {
-                self.world.entity_mut(ent).insert(*poison);
+                if let Some(main_attack) = unit_actions.vec.get_mut(0) {
+                    if let Some(mut effects) = self.world.entity_mut(*main_attack).get_mut::<actions::OnHitEffects>() {
+                        effects.vec.push(effects::Effect::PoisonEffect(*poison));
+                    }
+                }
             } else if let UnitAbility::Heal(heal) = spell {
                 self.world
                     .entity_mut(ent)
@@ -588,6 +654,9 @@ impl ECSWorld {
                     });
             }
         }
+
+        // Give unit action set
+        self.world.entity_mut(ent).insert(unit_actions);
         return ent.id();
     }
 
@@ -628,30 +697,7 @@ impl ECSWorld {
                 .remove::<NewCanvasItemDirective>();
         }
     }
-
-    // fn _process_new_particle_effects(&mut self) {
-    //     let mut entities: Vec<Entity> = Vec::new();
-    //     for (entity, directive) in self
-    //         .world
-    //         .query::<(Entity, &NewParticleEffectDirective)>()
-    //         .iter(&self.world)
-    //     {
-    //         entities.push(entity);
-    //         if let Some(effect) = self.particle_library.map.get(&directive.effect_name) {
-    //             unsafe {
-    //                 let server = VisualServer::godot_singleton();
-    //                 let canvas_item_rid = self.canvas_item;
-    //                 //server.particles_set_emission_transform(effect.effect_rid, Transform::IDENTITY.translated(Vector3{x:directive.position.x, y:directive.position.y, z:0.}));
-    //                 server.canvas_item_add_particles(canvas_item_rid, effect.effect_rid, effect.texture_rid, Rid::default());
-    //             }
-    //         }
-    //     }
-    //     for entity in entities {
-    //         self.world
-    //             .entity_mut(entity)
-    //             .remove::<NewParticleEffectDirective>();
-    //     }
-    // }
+  
     #[method]
     fn _process_in_place(&mut self) {
         self.world.insert_resource(Delta { seconds: 0f32 });

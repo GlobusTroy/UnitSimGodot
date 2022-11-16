@@ -3,6 +3,8 @@ use gdnative::prelude::*;
 
 pub mod abilities;
 pub mod actions;
+pub mod effects;
+pub mod projectiles;
 use actions::*;
 
 use crate::{
@@ -73,6 +75,13 @@ pub enum TeamValue {
     NeutralPassive,
     NeutralHostile,
     Team(usize),
+}
+
+#[derive(Component)]
+pub struct DeathApproaches {
+    pub spawn_corpse: bool,
+    pub cleanup_corpse_canvas: bool,
+    pub cleanup_time: f32,
 }
 
 #[derive(Component, Copy, Clone)]
@@ -898,14 +907,7 @@ pub fn apply_damages(
     )>,
     delta: Res<DeltaPhysics>,
 ) {
-    for (
-        entity,
-        mut damages,
-        mut hitpoints,
-        armor_option,
-        magic_armor_option,
-    ) in query.iter_mut()
-    {
+    for (entity, mut damages, mut hitpoints, armor_option, magic_armor_option) in query.iter_mut() {
         let mut i = 0;
         while i < damages.damages.len() && !damages.damages.is_empty() {
             let mut damage = damages.damages.get_mut(i).unwrap();
@@ -927,7 +929,14 @@ pub fn apply_damages(
             }
         }
         if hitpoints.hp <= 0.0 {
-            commands.entity(entity).insert(DeathApproaches{spawn_corpse:true, cleanup_corpse_canvas: false, cleanup_time: -1.0}).remove::<Hitpoints>();
+            commands
+                .entity(entity)
+                .insert(DeathApproaches {
+                    spawn_corpse: true,
+                    cleanup_corpse_canvas: false,
+                    cleanup_time: -1.0,
+                })
+                .remove::<Hitpoints>();
         }
     }
 }
@@ -1019,6 +1028,56 @@ pub fn tick_slow_poison(
         if poison.remaining_time <= 0.0 {
             commands.entity(entity).remove::<SlowPoisonDebuff>();
             boid.max_speed = boid.max_speed / poison.effect_originator.speed_multiplier;
+        }
+    }
+}
+
+pub fn resolve_death(
+    mut commands: Commands,
+    query: Query<(
+        Entity,
+        &Position,
+        &DeathApproaches,
+        Option<&crate::graphics::Renderable>,
+        Option<&crate::graphics::animation::AnimatedSprite>,
+        Option<&crate::graphics::ScaleSprite>,
+    )>,
+) {
+    for (ent, position, death, render_option, animated_sprite_option, scale_option) in query.iter()
+    {
+        if death.spawn_corpse {
+            if let Some(sprite) = animated_sprite_option {
+                let mut animated_sprite = crate::graphics::animation::AnimatedSprite::default();
+                animated_sprite.texture = sprite.texture;
+
+                // Negative timeout will be ignored and discarded by timeout system
+                let mut timeout = death.cleanup_time;
+                if !death.cleanup_corpse_canvas {
+                    timeout = -1.0
+                }
+
+                let mut scale = crate::graphics::ScaleSprite(Vector2::ONE);
+                if let Some(scale_existing) = scale_option {
+                    scale.0 = scale_existing.0;
+                }
+                commands
+                    .spawn()
+                    .insert(crate::graphics::NewCanvasItemDirective {})
+                    .insert(animated_sprite)
+                    .insert(Position { pos: position.pos })
+                    .insert(ExpirationTimer(timeout))
+                    .insert(crate::graphics::animation::PlayAnimationDirective {
+                        animation_name: "death".to_string(),
+                        is_one_shot: true,
+                    })
+                    .insert(scale);
+            }
+        }
+        commands.entity(ent).despawn();
+        if let Some(renderable) = render_option {
+            commands
+                .spawn()
+                .insert(CleanupCanvasItem(renderable.canvas_item_rid));
         }
     }
 }

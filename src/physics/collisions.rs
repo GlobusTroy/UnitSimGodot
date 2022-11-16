@@ -96,10 +96,10 @@ pub fn detect_collisions(
     let diameter_to_radius = 0.7;
     for (entity, position, radius, mass) in test_query.iter() {
         //TERRAIN collisions
-        for spatial_hash in get_all_spatial_hashes_from_circle(
-            position.pos,
-            radius.r + map.cell_size * diameter_to_radius,
-            map.cell_size,
+        for spatial_hash in get_convolution_neighbor_cells(
+            get_point_spatial_hash(position.pos, map.cell_size),
+            3,
+            map.max_bounds,
         )
         .iter()
         {

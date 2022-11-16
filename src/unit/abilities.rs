@@ -145,12 +145,12 @@ pub fn casting_state(
 
         casting.channeling_time += delta.seconds;
 
-        if let Some(mut flipper) = flippable_option {
-            if let Ok(attacker_pos) = pos_query.get(entity) {
-                if let Ok(target_pos) = pos_query.get(casting.target) {
-                    flipper.is_flipped = attacker_pos.pos.x > target_pos.pos.x;
-                }
-            }
-        }
+        // if let Some(mut flipper) = flippable_option {
+        //     if let Ok(attacker_pos) = pos_query.get(entity) {
+        //         if let Ok(target_pos) = pos_query.get(casting.target) {
+        //             flipper.is_flipped = attacker_pos.pos.x > target_pos.pos.x;
+        //         }
+        //     }
+        // }
     }
 }

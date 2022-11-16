@@ -1,4 +1,4 @@
-use crate::{physics::*, unit::Channeling};
+use crate::{physics::*, unit::{Channeling, actions::PerformingActionState}};
 use bevy_ecs::prelude::*;
 use gdnative::{api::VisualServer, prelude::*};
 
@@ -21,6 +21,7 @@ pub struct CleanupCanvasItem(pub Rid);
 pub struct FlippableSprite {
     pub is_flipped: bool,
     pub flip_speed: f32,
+    pub is_overriding_velocity: bool
 }
 
 #[derive(Component)]
@@ -38,17 +39,16 @@ pub fn update_canvas_items(
         Option<&Velocity>,
         Option<&mut FlippableSprite>,
         Option<&ScaleSprite>,
-        Option<&Channeling>,
     )>,
 ) {
-    for (renderable, position, velocity_option, flippable_option, scale_option, stunned_option) in
+    for (renderable, position, velocity_option, flippable_option, scale_option) in
         query.iter_mut()
     {
         let mut transform = Transform2D::IDENTITY;
 
         if let Some(velocity) = velocity_option {
             if let Some(mut flippable) = flippable_option {
-                if let None = stunned_option {
+                if !flippable.is_overriding_velocity {
                     if velocity.v.x.abs() > flippable.flip_speed {
                         flippable.is_flipped = velocity.v.x < 0.0;
                     }

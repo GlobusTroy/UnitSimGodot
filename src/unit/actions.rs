@@ -2,19 +2,19 @@ use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
 use crate::{
-    graphics::CleanupCanvasItem,
+    graphics::{CleanupCanvasItem, FlippableSprite},
     physics::{spatial_structures::SpatialHashTable, DeltaPhysics, Position, Radius, Velocity},
     util::{normalized_or_zero, true_distance, ExpirationTimer},
 };
 
 use super::{
     abilities::SlowPoisonAttack, Channeling, DamageInstance, Hitpoints, SlowPoisonDebuff,
-    StunOnHitEffect, Stunned, TeamAlignment,
+    StunOnHitEffect, Stunned, TeamAlignment, effects::Effect,
 };
 
 #[derive(Component)]
 pub struct UnitActions {
-    vec: Vec<Entity>,
+    pub vec: Vec<Entity>,
 }
 
 // Reusable action attached to a unit
@@ -24,11 +24,11 @@ pub struct ActionEntity {
 }
 
 #[derive(Component)]
-pub struct DeathApproaches {
-    pub spawn_corpse: bool,
-    pub cleanup_corpse_canvas: bool,
-    pub cleanup_time: f32,
+pub struct ActionAnimation {
+    pub animation_name: String,
 }
+
+
 
 // Instance of an action occurring, attached to an ActionEntity
 #[derive(Component)]
@@ -37,22 +37,13 @@ pub struct ActionInstanceEntity {
 }
 
 #[derive(Component)]
-pub struct ActionEffectApplied(bool);
-
-#[derive(Component)]
 pub struct SwingDetails {
     pub impact_time: f32,
     pub complete_time: f32,
     pub cooldown_time: f32,
 }
 
-#[derive(Component)]
-pub struct ActionProjectileDetails {
-    pub projectile_speed: f32,
-    pub projectile_scale: f32,
-    pub projectile_texture: Rid,
-    pub contact_distance: f32,
-}
+
 
 #[derive(Component)]
 pub struct Cooldown(pub f32);
@@ -65,7 +56,6 @@ pub struct Caster {
 #[derive(Component)]
 pub struct TargetEntity {
     pub entity: Entity,
-    pub other_targets: Vec<Entity>,
 }
 
 #[derive(Component)]
@@ -76,6 +66,7 @@ pub struct TargetPosition {
 #[derive(Component)]
 pub struct ChannelingDetails {
     pub total_time_channeled: f32,
+    pub effect_applied: bool,
 }
 
 pub enum ImpactType {
@@ -94,49 +85,56 @@ pub struct TargetsAllies {}
 
 #[derive(Component)]
 pub struct TargetFlags {
-    ignore_full_health: bool,
-    ignore_no_debuff: bool,
-    ignore_no_buff: bool,
-    target_enemies: bool,
-    target_allies: bool,
+    pub ignore_full_health: bool,
+    pub ignore_no_debuff: bool,
+    pub ignore_no_buff: bool,
+    pub target_enemies: bool,
+    pub target_allies: bool,
+}
+
+impl TargetFlags {
+    pub fn normal_attack() -> Self {
+        Self {
+            ignore_full_health: false,
+            ignore_no_debuff: false,
+            ignore_no_buff: false,
+            target_enemies: true,
+            target_allies: false,
+        }
+    }
+
+    pub fn heal() -> Self {
+        Self {
+            ignore_full_health: true,
+            ignore_no_debuff: false,
+            ignore_no_buff: false,
+            target_enemies: false,
+            target_allies: true,
+        }
+    }
+
+    pub fn cleanse() -> Self {
+        Self {
+            ignore_full_health: false,
+            ignore_no_debuff: true,
+            ignore_no_buff: false,
+            target_enemies: false,
+            target_allies: true,
+        }
+    }
 }
 
 #[derive(Component)]
 pub struct ActionRange(pub f32);
 
-#[derive(Component)]
-pub struct Splash {
-    pub radius: f32,
-    pub effect_ratio: f32,
-}
 
 #[derive(Component)]
 pub struct Cleave {
     pub angle_degrees: f32,
-    pub effect_ratio: f32,
 }
 
 #[derive(Component)]
 pub struct OnHitEffects {
-    vec: Vec<Effect>,
-}
-
-#[derive(Component)]
-pub struct Projectile {
-    pub target: Entity,
-    pub target_pos: Vector2,
-    pub origin_action: Entity,
-}
-
-#[derive(Copy, Clone)]
-pub enum Effect {
-    DamageEffect(DamageInstance),
-    PoisonEffect(SlowPoisonAttack),
-    StunEffect(StunOnHitEffect),
-}
-
-#[derive(Component)]
-pub struct ResolveEffectsBuffer {
     pub vec: Vec<Effect>,
 }
 
@@ -158,59 +156,25 @@ pub fn action_cooldown(
     }
 }
 
-fn spawn_projectile(
-    commands: &mut Commands,
-    origin_action: Entity,
-    origin_pos: Vector2,
-    target: Entity,
-    details: &ActionProjectileDetails,
-) {
-    commands
-        .spawn()
-        .insert(Projectile {
-            target: target,
-            target_pos: Vector2::ZERO,
-            origin_action: origin_action,
-        })
-        .insert(Position { pos: origin_pos })
-        .insert(Velocity { v: Vector2::ZERO })
-        .insert(crate::graphics::NewCanvasItemDirective {})
-        .insert(crate::graphics::animation::AnimatedSprite {
-            // Will be overriden by play animation directive
-            texture: details.projectile_texture,
-            animation_name: "fly".to_string(),
-            animation_index: 0,
-            animation_speed: 1.,
-            animation_time_since_change: 0.,
-            animation_length: 100,
-            is_one_shot: false,
-        })
-        .insert(crate::graphics::animation::PlayAnimationDirective {
-            animation_name: "fly".to_string(),
-            is_one_shot: false,
-        })
-        .insert(crate::graphics::ScaleSprite(Vector2 {
-            x: details.projectile_scale,
-            y: details.projectile_scale,
-        }));
-}
+
 
 pub fn performing_action_state(
     mut commands: Commands,
     query: Query<(Entity, &PerformingActionState, &Position, &Radius)>,
+    mut flip_query: Query<&mut FlippableSprite>,
     mut action_query: Query<(
         Entity,
         &mut ChannelingDetails,
         &SwingDetails,
-        &mut ActionEffectApplied,
         &ActionImpactType,
         &TargetEntity,
         &OnHitEffects,
-        Option<&ActionProjectileDetails>,
+        Option<&super::projectiles::ActionProjectileDetails>,
         Option<&Cleave>,
         Option<&ActionRange>,
+        Option<&super::projectiles::Splash>
     )>,
-    mut apply_query: Query<&mut ResolveEffectsBuffer>,
+    mut apply_query: Query<&mut super::effects::ResolveEffectsBuffer>,
     pos_query: Query<(&Position, &Radius)>,
     spatial: Res<SpatialHashTable>,
     delta: Res<DeltaPhysics>,
@@ -220,18 +184,32 @@ pub fn performing_action_state(
             ent_action,
             mut channeling,
             swing,
-            mut already_applied,
             impact_type,
             target,
             effects,
             projectile_option,
             cleave_option,
             range_option,
+            splash_option,
         )) = action_query.get_mut(performer.action)
         {
             channeling.total_time_channeled += delta.seconds;
 
-            if channeling.total_time_channeled >= swing.impact_time && !already_applied.0 {
+            // Handle flipping sprite
+            if let Ok(mut flipper) = flip_query.get_mut(ent) {
+                if !channeling.effect_applied {
+                    if let Ok((caster_pos, _)) = pos_query.get(ent) {
+                        if let Ok((target_pos, _)) = pos_query.get(target.entity) {
+                            flipper.is_flipped = caster_pos.pos.x > target_pos.pos.x;
+                            flipper.is_overriding_velocity = true;
+                        }
+                    }
+                } else {
+                    flipper.is_overriding_velocity = false;
+                }
+            } 
+
+            if channeling.total_time_channeled >= swing.impact_time && !channeling.effect_applied {
                 match impact_type.0 {
                     ImpactType::Instant => {
                         if let Ok(mut buffer) = apply_query.get_mut(target.entity) {
@@ -242,53 +220,55 @@ pub fn performing_action_state(
 
                         // Handle cleave
                         if let Some(cleave) = cleave_option {
-                            if let Some(range) = range_option {
-                                for cell in crate::get_all_spatial_hashes_from_circle(
-                                    position.pos,
-                                    range.0,
-                                    spatial.cell_size,
-                                ) {
-                                    if let Some(potential_targets) = spatial.table.get(&cell) {
-                                        let mut already_effected = std::collections::HashSet::new();
-                                        already_effected.insert(target.entity);
-                                        if let Ok((original_target_pos, _)) =
-                                            pos_query.get(target.entity)
-                                        {
-                                            let to_target = original_target_pos.pos - position.pos;
-                                            for potential_splash_target in potential_targets.iter()
+                            if cleave.angle_degrees > 0.0 {
+                                if let Some(range) = range_option {
+                                    for cell in crate::get_all_spatial_hashes_from_circle(
+                                        position.pos,
+                                        range.0,
+                                        spatial.cell_size,
+                                    ) {
+                                        if let Some(potential_targets) = spatial.table.get(&cell) {
+                                            let mut already_effected = std::collections::HashSet::new();
+                                            already_effected.insert(target.entity);
+                                            if let Ok((original_target_pos, _)) =
+                                                pos_query.get(target.entity)
                                             {
-                                                if already_effected
-                                                    .contains(potential_splash_target)
+                                                let to_target = original_target_pos.pos - position.pos;
+                                                for potential_splash_target in potential_targets.iter()
                                                 {
-                                                    continue;
-                                                }
-                                                if let Ok((splash_target_pos, splash_target_rad)) =
-                                                    pos_query.get(*potential_splash_target)
-                                                {
-                                                    if true_distance(
-                                                        position.pos,
-                                                        splash_target_pos.pos,
-                                                        radius.r,
-                                                        splash_target_rad.r,
-                                                    ) <= range.0
+                                                    if already_effected
+                                                        .contains(potential_splash_target)
                                                     {
-                                                        already_effected
-                                                            .insert(*potential_splash_target);
-                                                        // Check for angle
-                                                        let to_cleave =
-                                                            splash_target_pos.pos - position.pos;
-                                                        if to_target
-                                                            .angle_to(to_cleave)
-                                                            .to_degrees()
-                                                            .abs()
-                                                            <= cleave.angle_degrees
+                                                        continue;
+                                                    }
+                                                    if let Ok((splash_target_pos, splash_target_rad)) =
+                                                        pos_query.get(*potential_splash_target)
+                                                    {
+                                                        if true_distance(
+                                                            position.pos,
+                                                            splash_target_pos.pos,
+                                                            radius.r,
+                                                            splash_target_rad.r,
+                                                        ) <= range.0
                                                         {
-                                                            // Apply effects to cleave targets
-                                                            if let Ok(mut buffer) = apply_query
-                                                                .get_mut(*potential_splash_target)
+                                                            already_effected
+                                                                .insert(*potential_splash_target);
+                                                            // Check for angle
+                                                            let to_cleave =
+                                                                splash_target_pos.pos - position.pos;
+                                                            if to_target
+                                                                .angle_to(to_cleave)
+                                                                .to_degrees()
+                                                                .abs()
+                                                                <= cleave.angle_degrees
                                                             {
-                                                                for effect in effects.vec.iter() {
-                                                                    buffer.vec.push(*effect);
+                                                                // Apply effects to cleave targets
+                                                                if let Ok(mut buffer) = apply_query
+                                                                    .get_mut(*potential_splash_target)
+                                                                {
+                                                                    for effect in effects.vec.iter() {
+                                                                        buffer.vec.push(*effect);
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -303,203 +283,35 @@ pub fn performing_action_state(
                     }
                     ImpactType::Projectile => {
                         if let Some(details) = projectile_option {
-                            spawn_projectile(
-                                &mut commands,
-                                ent_action,
-                                position.pos,
-                                target.entity,
-                                details,
-                            );
+                            if let Ok((target_position,_)) = pos_query.get(target.entity) {
+                                let mut splash_radius = 0.0;
+                                if let Some(splash) = splash_option {
+                                    splash_radius = splash.radius;
+                                }
+
+                                super::projectiles::spawn_projectile(
+                                    &mut commands,
+                                    ent_action,
+                                    position.pos,
+                                    target.entity,
+                                    target_position.pos,
+                                    details,
+                                    splash_radius
+                                );
+                            }
                         }
                     }
                     _ => {}
                 }
-                already_applied.0 = true;
+                channeling.effect_applied = true;
             }
 
             if channeling.total_time_channeled >= swing.complete_time {
                 commands.entity(ent).remove::<PerformingActionState>();
                 channeling.total_time_channeled = 0.0;
+                channeling.effect_applied = false;
             }
         }
-    }
-}
-
-pub fn projectile_homing(
-    mut commands: Commands,
-    mut query: Query<(
-        &Position,
-        &mut Velocity,
-        &mut Projectile,
-        &ActionProjectileDetails,
-    )>,
-    pos_query: Query<&Position>,
-) {
-    for (position, mut velocity, mut projectile, details) in query.iter_mut() {
-        if let Ok(position_target) = pos_query.get(projectile.target) {
-            projectile.target_pos = position_target.pos;
-        }
-        velocity.v =
-            normalized_or_zero(projectile.target_pos - position.pos) * details.projectile_speed;
-    }
-}
-
-pub fn projectile_contact(
-    mut commands: Commands,
-    mut query: Query<(
-        Entity,
-        &Position,
-        &Projectile,
-        &ActionProjectileDetails,
-        Option<&Splash>,
-    )>,
-    mut apply_query: Query<&mut ResolveEffectsBuffer>,
-    splash_query: Query<(&Position, &Radius)>,
-    origin_effect_query: Query<&OnHitEffects>,
-    spatial: Res<SpatialHashTable>,
-) {
-    for (ent, position, projectile, details, splash_option) in query.iter_mut() {
-        if position.pos.distance_to(projectile.target_pos) <= details.contact_distance {
-            //Apply effects
-            if let Ok(mut buffer) = apply_query.get_mut(projectile.target) {
-                if let Ok(effects) = origin_effect_query.get(projectile.origin_action) {
-                    for effect in effects.vec.iter() {
-                        buffer.vec.push(*effect);
-                    }
-                }
-            }
-
-            // Handle splash
-            if let Some(splash) = splash_option {
-                for cell in crate::get_all_spatial_hashes_from_circle(
-                    position.pos,
-                    splash.radius,
-                    spatial.cell_size,
-                ) {
-                    if let Some(potential_targets) = spatial.table.get(&cell) {
-                        let mut already_effected = std::collections::HashSet::new();
-                        already_effected.insert(projectile.target);
-
-                        for potential_splash_target in potential_targets.iter() {
-                            if already_effected.contains(potential_splash_target) {
-                                continue;
-                            }
-                            if let Ok((splash_target_pos, splash_target_rad)) =
-                                splash_query.get(*potential_splash_target)
-                            {
-                                if true_distance(
-                                    projectile.target_pos,
-                                    splash_target_pos.pos,
-                                    splash.radius,
-                                    splash_target_rad.r,
-                                ) <= 0.0
-                                {
-                                    // Apply effects to splash targets
-                                    already_effected.insert(*potential_splash_target);
-                                    if let Ok(mut buffer) = apply_query.get_mut(projectile.target) {
-                                        if let Ok(effects) =
-                                            origin_effect_query.get(projectile.origin_action)
-                                        {
-                                            for effect in effects.vec.iter() {
-                                                buffer.vec.push(*effect);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            commands.entity(ent).insert(DeathApproaches {
-                spawn_corpse: true,
-                cleanup_corpse_canvas: true,
-                cleanup_time: 1.5,
-            });
-        }
-    }
-}
-
-pub fn resolve_death(
-    mut commands: Commands,
-    query: Query<(
-        Entity,
-        &Position,
-        &DeathApproaches,
-        Option<&crate::graphics::Renderable>,
-        Option<&crate::graphics::animation::AnimatedSprite>,
-        Option<&crate::graphics::ScaleSprite>,
-    )>,
-) {
-    for (ent, position, death, render_option, animated_sprite_option, scale_option) in query.iter() {
-        if death.spawn_corpse {
-            if let Some(sprite) = animated_sprite_option {
-                let mut animated_sprite = crate::graphics::animation::AnimatedSprite::default();
-                animated_sprite.texture = sprite.texture;
-
-
-                // Negative timeout will be ignored and discarded by timeout system
-                let mut timeout = death.cleanup_time;
-                if !death.cleanup_corpse_canvas { timeout = -1.0 }
-
-                let mut scale = crate::graphics::ScaleSprite(Vector2::ONE);
-                if let Some(scale_existing) = scale_option {
-                    scale.0 = scale_existing.0;
-                }
-                commands
-                    .spawn()
-                    .insert(crate::graphics::NewCanvasItemDirective {})
-                    .insert(animated_sprite)
-                    .insert(Position { pos: position.pos })
-                    .insert(ExpirationTimer(timeout))
-                    .insert(crate::graphics::animation::PlayAnimationDirective {
-                        animation_name: "death".to_string(),
-                        is_one_shot: true,
-                    })
-                    .insert(scale);
-            }
-        }
-        commands.entity(ent).despawn();
-        if let Some(renderable) = render_option {
-            commands
-                .spawn()
-                .insert(CleanupCanvasItem(renderable.canvas_item_rid));
-        }
-    }
-}
-
-pub fn resolve_effects(
-    mut commands: Commands,
-    mut query: Query<(Entity, &mut ResolveEffectsBuffer)>,
-    mut damage_query: Query<&mut crate::unit::AppliedDamage>,
-) {
-    for (ent, mut buffer) in query.iter_mut() {
-        for effect in buffer.vec.iter() {
-            match effect {
-                Effect::PoisonEffect(poison) => {
-                    commands.entity(ent).insert(SlowPoisonDebuff {
-                        effect_originator: *poison,
-                        remaining_time: poison.duration,
-                    });
-                }
-                Effect::StunEffect(stun) => {
-                    commands
-                        .entity(ent)
-                        .insert(Stunned {
-                            duration: stun.duration,
-                        })
-                        .remove::<PerformingActionState>();
-                }
-                Effect::DamageEffect(damage_instance) => {
-                    if let Ok(mut damages) = damage_query.get_mut(ent) {
-                        damages.damages.push(*damage_instance);
-                    }
-                }
-                _ => (),
-            }
-        }
-
-        buffer.vec.clear();
     }
 }
 
@@ -511,8 +323,8 @@ pub fn target_enemies(
             Entity,
             &ActionRange,
             &SwingDetails,
-            &mut TargetEntity,
             &TargetFlags,
+            Option<&ActionAnimation>,
         ),
         Without<Cooldown>,
     >,
@@ -524,7 +336,7 @@ pub fn target_enemies(
 ) {
     for (ent, actions) in caster_query.iter() {
         for action in actions.vec.iter() {
-            if let Ok((action_ent, range, swing_details, target_of_action, target_flags)) =
+            if let Ok((action_ent, range, swing_details, target_flags, action_animation)) =
                 action_query.get_mut(*action)
             {
                 if let Ok((pos, rad)) = pos_query.get(ent) {
@@ -575,14 +387,20 @@ pub fn target_enemies(
                             }
                         }
                     }
-                    perform_action(
-                        &mut commands,
-                        ent,
-                        action_ent,
-                        target_of_action,
-                        cur_target,
-                        swing_details,
-                    );
+
+                    if cur_target == ent {
+                        continue;
+                    }
+
+                    if let Some(animation) = action_animation {
+                        commands.entity(ent).insert(
+                            crate::graphics::animation::PlayAnimationDirective {
+                                animation_name: animation.animation_name.clone(),
+                                is_one_shot: true,
+                            },
+                        );
+                    }
+                    perform_action(&mut commands, ent, action_ent, cur_target, swing_details);
                 }
             }
         }
@@ -610,15 +428,16 @@ fn perform_action(
     commands: &mut Commands,
     unit_entity: Entity,
     action_entity: Entity,
-    mut target_of_action: Mut<TargetEntity>,
     action_target: Entity,
     swing_details: &SwingDetails,
 ) {
     commands.entity(unit_entity).insert(PerformingActionState {
         action: action_entity,
     });
-    target_of_action.entity = action_target;
     commands
         .entity(action_entity)
+        .insert(TargetEntity {
+            entity: action_target,
+        })
         .insert(Cooldown(swing_details.cooldown_time));
 }
