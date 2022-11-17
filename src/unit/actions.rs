@@ -2,15 +2,49 @@ use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
 use crate::{
-    graphics::{CleanupCanvasItem, FlippableSprite},
+    graphics::FlippableSprite,
     physics::{spatial_structures::SpatialHashTable, DeltaPhysics, Position, Radius, Velocity},
-    util::{normalized_or_zero, true_distance, ExpirationTimer},
+    util::true_distance,
 };
 
-use super::{
-    abilities::SlowPoisonAttack, Channeling, DamageInstance, Hitpoints, SlowPoisonDebuff,
-    StunOnHitEffect, Stunned, TeamAlignment, effects::Effect,
-};
+use super::{effects::Effect, Hitpoints, Stunned, TeamAlignment, SlowPoisoned};
+
+#[derive(Bundle)]
+pub struct ActionBundle {
+    pub channeling: ChannelingDetails,
+    pub swing: SwingDetails,
+    pub range: ActionRange,
+    pub impact: ActionImpactType,
+    pub target_flags: TargetFlags,
+    pub animation: ActionAnimation,
+}
+
+impl ActionBundle {
+    pub fn new(
+        swing: SwingDetails,
+        range: f32,
+        impact: ImpactType,
+        target_flags: TargetFlags,
+        animation_name: String,
+    ) -> ActionBundle {
+        Self {
+            channeling: ChannelingDetails {
+                total_time_channeled: 0.0,
+                effect_applied: false,
+            },
+            swing: swing,
+            range: ActionRange(range),
+            impact: ActionImpactType(impact),
+            target_flags: target_flags,
+            animation: ActionAnimation {
+                animation_name: animation_name,
+            },
+        }
+    }
+}
+
+#[derive(Component, Clone, Debug)]
+pub struct EffectTexture(pub Rid);
 
 #[derive(Component)]
 pub struct UnitActions {
@@ -28,8 +62,6 @@ pub struct ActionAnimation {
     pub animation_name: String,
 }
 
-
-
 // Instance of an action occurring, attached to an ActionEntity
 #[derive(Component)]
 pub struct ActionInstanceEntity {
@@ -42,8 +74,6 @@ pub struct SwingDetails {
     pub complete_time: f32,
     pub cooldown_time: f32,
 }
-
-
 
 #[derive(Component)]
 pub struct Cooldown(pub f32);
@@ -127,7 +157,6 @@ impl TargetFlags {
 #[derive(Component)]
 pub struct ActionRange(pub f32);
 
-
 #[derive(Component)]
 pub struct Cleave {
     pub angle_degrees: f32,
@@ -156,8 +185,6 @@ pub fn action_cooldown(
     }
 }
 
-
-
 pub fn performing_action_state(
     mut commands: Commands,
     query: Query<(Entity, &PerformingActionState, &Position, &Radius)>,
@@ -172,7 +199,8 @@ pub fn performing_action_state(
         Option<&super::projectiles::ActionProjectileDetails>,
         Option<&Cleave>,
         Option<&ActionRange>,
-        Option<&super::projectiles::Splash>
+        Option<&super::projectiles::Splash>,
+        Option<&EffectTexture>,
     )>,
     mut apply_query: Query<&mut super::effects::ResolveEffectsBuffer>,
     pos_query: Query<(&Position, &Radius)>,
@@ -191,6 +219,7 @@ pub fn performing_action_state(
             cleave_option,
             range_option,
             splash_option,
+            texture_option,
         )) = action_query.get_mut(performer.action)
         {
             channeling.total_time_channeled += delta.seconds;
@@ -207,7 +236,7 @@ pub fn performing_action_state(
                 } else {
                     flipper.is_overriding_velocity = false;
                 }
-            } 
+            }
 
             if channeling.total_time_channeled >= swing.impact_time && !channeling.effect_applied {
                 match impact_type.0 {
@@ -228,21 +257,26 @@ pub fn performing_action_state(
                                         spatial.cell_size,
                                     ) {
                                         if let Some(potential_targets) = spatial.table.get(&cell) {
-                                            let mut already_effected = std::collections::HashSet::new();
+                                            let mut already_effected =
+                                                std::collections::HashSet::new();
                                             already_effected.insert(target.entity);
                                             if let Ok((original_target_pos, _)) =
                                                 pos_query.get(target.entity)
                                             {
-                                                let to_target = original_target_pos.pos - position.pos;
-                                                for potential_splash_target in potential_targets.iter()
+                                                let to_target =
+                                                    original_target_pos.pos - position.pos;
+                                                for potential_splash_target in
+                                                    potential_targets.iter()
                                                 {
                                                     if already_effected
                                                         .contains(potential_splash_target)
                                                     {
                                                         continue;
                                                     }
-                                                    if let Ok((splash_target_pos, splash_target_rad)) =
-                                                        pos_query.get(*potential_splash_target)
+                                                    if let Ok((
+                                                        splash_target_pos,
+                                                        splash_target_rad,
+                                                    )) = pos_query.get(*potential_splash_target)
                                                     {
                                                         if true_distance(
                                                             position.pos,
@@ -254,8 +288,8 @@ pub fn performing_action_state(
                                                             already_effected
                                                                 .insert(*potential_splash_target);
                                                             // Check for angle
-                                                            let to_cleave =
-                                                                splash_target_pos.pos - position.pos;
+                                                            let to_cleave = splash_target_pos.pos
+                                                                - position.pos;
                                                             if to_target
                                                                 .angle_to(to_cleave)
                                                                 .to_degrees()
@@ -264,9 +298,12 @@ pub fn performing_action_state(
                                                             {
                                                                 // Apply effects to cleave targets
                                                                 if let Ok(mut buffer) = apply_query
-                                                                    .get_mut(*potential_splash_target)
+                                                                    .get_mut(
+                                                                        *potential_splash_target,
+                                                                    )
                                                                 {
-                                                                    for effect in effects.vec.iter() {
+                                                                    for effect in effects.vec.iter()
+                                                                    {
                                                                         buffer.vec.push(*effect);
                                                                     }
                                                                 }
@@ -283,7 +320,7 @@ pub fn performing_action_state(
                     }
                     ImpactType::Projectile => {
                         if let Some(details) = projectile_option {
-                            if let Ok((target_position,_)) = pos_query.get(target.entity) {
+                            if let Ok((target_position, _)) = pos_query.get(target.entity) {
                                 let mut splash_radius = 0.0;
                                 if let Some(splash) = splash_option {
                                     splash_radius = splash.radius;
@@ -296,12 +333,33 @@ pub fn performing_action_state(
                                     target.entity,
                                     target_position.pos,
                                     details,
-                                    splash_radius
+                                    splash_radius,
                                 );
                             }
                         }
                     }
                     _ => {}
+                }
+
+                if let Some(texture) = texture_option {
+                    let mut animated_sprite = crate::graphics::animation::AnimatedSprite::default();
+                    animated_sprite.texture = texture.0;
+                    commands
+                        .spawn()
+                        .insert(crate::graphics::NewCanvasItemDirective {})
+                        .insert(animated_sprite)
+                        .insert(Position { pos: position.pos })
+                        .insert(Velocity { v: Vector2::ZERO })
+                        .insert(crate::util::ExpirationTimer(1.5))
+                        .insert(crate::util::MirrorTargetPosition {})
+                        .insert(TargetEntity {
+                            entity: target.entity,
+                        })
+                        .insert(crate::graphics::ScaleSprite(Vector2 { x: 0.75, y: 0.75 }))
+                        .insert(crate::graphics::animation::PlayAnimationDirective {
+                            animation_name: "death".to_string(),
+                            is_one_shot: true,
+                        });
                 }
                 channeling.effect_applied = true;
             }
@@ -315,7 +373,7 @@ pub fn performing_action_state(
     }
 }
 
-pub fn target_enemies(
+pub fn target_units(
     mut commands: Commands,
     caster_query: Query<(Entity, &UnitActions), (Without<Stunned>, Without<PerformingActionState>)>,
     mut action_query: Query<
@@ -330,7 +388,7 @@ pub fn target_enemies(
     >,
     pos_query: Query<(&Position, &Radius)>,
     alignment_query: Query<&TeamAlignment>,
-    debuffed_query: Query<Entity, Or<(With<Stunned>, With<SlowPoisonDebuff>)>>,
+    debuffed_query: Query<Entity, Or<(With<Stunned>, With<SlowPoisoned>)>>,
     health_query: Query<&Hitpoints>,
     neighbor_cache: Res<crate::physics::spatial_structures::SpatialNeighborsCache>,
 ) {
@@ -362,7 +420,7 @@ pub fn target_enemies(
 
                             // Handle other target flags
                             if target_flags.ignore_full_health
-                                && !has_full_health(neighbor, &health_query)
+                                && has_full_health(neighbor, &health_query)
                             {
                                 continue;
                             }
@@ -409,7 +467,7 @@ pub fn target_enemies(
 
 fn has_debuff(
     ent: &Entity,
-    debuff_query: &Query<Entity, Or<(With<Stunned>, With<SlowPoisonDebuff>)>>,
+    debuff_query: &Query<Entity, Or<(With<Stunned>, With<SlowPoisoned>)>>,
 ) -> bool {
     if let Ok(_) = debuff_query.get(*ent) {
         return true;

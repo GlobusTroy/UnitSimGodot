@@ -110,6 +110,14 @@ pub struct AnimatedSprite {
     pub is_one_shot: bool,
 }
 
+impl AnimatedSprite{
+    pub fn new(texture: Rid) -> Self {
+        let mut new = AnimatedSprite::default();
+        new.texture = texture;
+        new
+    }
+}
+
 #[derive(Component)]
 pub struct PlayAnimationDirective {
     pub animation_name: String,
@@ -146,8 +154,8 @@ pub fn animate_sprites(
         Option<&Radius>,
         Option<&TeamAlignment>,
         Option<&Hitpoints>,
-        Option<&crate::unit::SlowPoisonDebuff>,
-        Option<&crate::unit::Stunned>,
+        Option<&super::AlphaSprite>,
+        Option<&super::ModulateSprite>
     )>,
     delta: Res<Delta>,
     library: Res<AnimationLibrary>,
@@ -160,8 +168,8 @@ pub fn animate_sprites(
         radius_option,
         alignment_option,
         hitpoints_option,
-        poison_option,
-        stunned_option,
+        alpha_option,
+        modulate_option,
     ) in query.iter_mut()
     {
         //Animate
@@ -250,7 +258,7 @@ pub fn animate_sprites(
                         server.canvas_item_add_circle(
                             renderable.canvas_item_rid,
                             Vector2::ZERO,
-                            (radius.r * (0.5 + 0.6 * (hitpoints.hp / hitpoints.max_hp))) as f64,
+                            (radius.r * (0.15 + 0.85 * (hitpoints.hp / hitpoints.max_hp))) as f64,
                             Color {
                                 r: red,
                                 g: green as i32 as f32,
@@ -268,13 +276,16 @@ pub fn animate_sprites(
                 b: 1.,
                 a: 1.,
             };
-            if let Some(_) = stunned_option {
-                color.b = 0.;
+
+            if let Some(alpha) = alpha_option {
+                color.a = alpha.0;
             }
-            if let Some(_) = poison_option {
-                color.r = 0.;
-                color.b = 0.;
+            if let Some(modulate) = modulate_option {
+                color.r = modulate.r;
+                color.g = modulate.g;
+                color.b = modulate.b;
             }
+
             server.canvas_item_add_texture_rect_region(
                 renderable.canvas_item_rid,
                 self_rect,

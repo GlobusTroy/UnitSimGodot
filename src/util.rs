@@ -42,15 +42,22 @@ pub fn expire_entities(
 pub struct MirrorTargetPosition {}
 
 pub fn copy_target_position(
-    mut query: Query<(&mut crate::physics::Velocity, &crate::physics::Position, &crate::unit::actions::TargetEntity), With<MirrorTargetPosition>>,
+    mut query: Query<
+        (
+            &mut crate::physics::Velocity,
+            &crate::physics::Position,
+            &crate::unit::actions::TargetEntity,
+        ),
+        With<MirrorTargetPosition>,
+    >,
     pos_query: Query<&crate::physics::Position>,
     delta: Res<DeltaPhysics>,
 ) {
     for (mut vel, pos, target) in query.iter_mut() {
         if let Ok(pos_target) = pos_query.get(target.entity) {
-            vel.v = crate::util::normalized_or_zero(pos_target.pos - pos.pos) * (1. / delta.seconds);
+            vel.v = (pos_target.pos - pos.pos) * (1. / delta.seconds);
         }
-    } 
+    }
 }
 
 pub fn true_distance(pos1: Vector2, pos2: Vector2, rad1: f32, rad2: f32) -> f32 {

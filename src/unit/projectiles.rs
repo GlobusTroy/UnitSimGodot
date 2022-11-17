@@ -1,8 +1,7 @@
 use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
-use crate::physics::{Position, Velocity, Radius};
-
+use crate::physics::{Position, Radius, Velocity};
 
 #[derive(Component)]
 pub struct Projectile {
@@ -19,12 +18,10 @@ pub struct ActionProjectileDetails {
     pub contact_distance: f32,
 }
 
-
 #[derive(Component)]
 pub struct Splash {
     pub radius: f32,
 }
-
 
 pub fn spawn_projectile(
     commands: &mut Commands,
@@ -33,7 +30,7 @@ pub fn spawn_projectile(
     target: Entity,
     target_pos: Vector2,
     details: &ActionProjectileDetails,
-    splash_radius: f32
+    splash_radius: f32,
 ) {
     commands
         .spawn()
@@ -45,7 +42,9 @@ pub fn spawn_projectile(
         .insert(*details)
         .insert(Position { pos: origin_pos })
         .insert(Velocity { v: Vector2::ZERO })
-        .insert(Splash{radius: splash_radius})
+        .insert(Splash {
+            radius: splash_radius,
+        })
         .insert(crate::graphics::NewCanvasItemDirective {})
         .insert(crate::graphics::animation::AnimatedSprite {
             // Will be overriden by play animation directive
@@ -67,7 +66,6 @@ pub fn spawn_projectile(
         }));
 }
 
-
 pub fn projectile_homing(
     mut commands: Commands,
     mut query: Query<(
@@ -82,8 +80,8 @@ pub fn projectile_homing(
         if let Ok(position_target) = pos_query.get(projectile.target) {
             projectile.target_pos = position_target.pos;
         }
-        velocity.v =
-            crate::util::normalized_or_zero(projectile.target_pos - position.pos) * details.projectile_speed;
+        velocity.v = crate::util::normalized_or_zero(projectile.target_pos - position.pos)
+            * details.projectile_speed;
     }
 }
 
@@ -139,15 +137,29 @@ pub fn projectile_contact(
                                 {
                                     // Apply effects to splash targets
                                     already_effected.insert(*potential_splash_target);
-                                    if let Ok(mut buffer) = apply_query.get_mut(*potential_splash_target) {
+                                    if let Ok(mut buffer) =
+                                        apply_query.get_mut(*potential_splash_target)
+                                    {
                                         if let Ok(effects) =
                                             origin_effect_query.get(projectile.origin_action)
                                         {
                                             for effect in effects.vec.iter() {
-                                                if let super::effects::Effect::DamageEffect(mut dmg) = effect {
-                                                    dmg.damage_type = super::DamageType::Magic;
-                                                } 
-                                                buffer.vec.push(*effect);
+                                                if let super::effects::Effect::DamageEffect(dmg) =
+                                                    effect
+                                                {
+                                                    buffer.vec.push(
+                                                        super::effects::Effect::DamageEffect(
+                                                            super::DamageInstance {
+                                                                damage: dmg.damage,
+                                                                delay: dmg.delay,
+                                                                damage_type:
+                                                                    super::DamageType::Magic,
+                                                            },
+                                                        ),
+                                                    );
+                                                } else {
+                                                    buffer.vec.push(*effect);
+                                                }
                                             }
                                         }
                                     }

@@ -1,4 +1,7 @@
-use crate::{physics::*, unit::{Channeling, actions::PerformingActionState}};
+use crate::{
+    physics::*,
+    unit::{actions::PerformingActionState, Channeling},
+};
 use bevy_ecs::prelude::*;
 use gdnative::{api::VisualServer, prelude::*};
 
@@ -21,11 +24,20 @@ pub struct CleanupCanvasItem(pub Rid);
 pub struct FlippableSprite {
     pub is_flipped: bool,
     pub flip_speed: f32,
-    pub is_overriding_velocity: bool
+    pub is_overriding_velocity: bool,
 }
 
 #[derive(Component)]
 pub struct ScaleSprite(pub Vector2);
+
+ 
+#[derive(Component)]
+pub struct AlphaSprite(pub f32);
+
+#[derive(Component)]
+pub struct ModulateSprite{pub r: f32, pub b: f32, pub g: f32}
+
+
 
 #[derive(Default)]
 pub struct Delta {
@@ -41,8 +53,7 @@ pub fn update_canvas_items(
         Option<&ScaleSprite>,
     )>,
 ) {
-    for (renderable, position, velocity_option, flippable_option, scale_option) in
-        query.iter_mut()
+    for (renderable, position, velocity_option, flippable_option, scale_option) in query.iter_mut()
     {
         let mut transform = Transform2D::IDENTITY;
 

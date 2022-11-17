@@ -77,6 +77,13 @@ pub struct BoidParams {
     pub max_force: f32,
 }
 
+pub fn update_boid_params_to_stats(mut query: Query<(&mut BoidParams, &Mass, &crate::unit::Speed, &crate::unit::Acceleration)>) {
+    for (mut boid, mass, speed, acc) in query.iter_mut() {
+        boid.max_speed = speed.speed;
+        boid.max_force = acc.acc * mass.0;
+    }
+}
+
 pub fn boid_apply_params(
     mut commands: Commands,
     mut query: Query<(
@@ -152,9 +159,6 @@ pub fn kite_enemies_boid(
         query.iter_mut()
     {
         if let Some(neighbors) = spatial.get_neighbors(&entity, boid.kite_radius) {
-            let mut min_distance = boid.kite_radius;
-            let mut min_pos = position.pos;
-
             for neighbor in neighbors {
                 if let Ok((alignment2, position2, radius2)) = target_query.get(neighbor) {
                     if alignment2.alignment != TeamValue::NeutralPassive
@@ -162,22 +166,17 @@ pub fn kite_enemies_boid(
                     {
                         let distance =
                             true_distance(position.pos, position2.pos, radius.r, radius2.r);
-                        if distance < min_distance {
-                            min_distance = distance;
-                            min_pos = position2.pos;
+                        if distance < boid.kite_radius {
+                            let kiting_distance = boid.kite_radius - distance;
+                            let desired_vel =
+                                position2.pos.direction_to(position.pos) * kiting_distance.min(params.max_speed);
+                            let separation_force = (desired_vel - velocity.v).clamped(params.max_force);
+                            let distance_multiplier = boid.kite_radius / distance.max(0.001);
+                            forces.0 += separation_force * distance_multiplier * boid.multiplier;
                         }
                     }
                 }
             }
-            if min_pos == position.pos {
-                continue;
-            }
-
-            let desired_velocity = normalized_or_zero(position.pos - min_pos) * params.max_speed;
-            let force = normalized_or_zero(desired_velocity - velocity.v)
-                * params.max_force
-                * boid.multiplier;
-            forces.0 += force;
         }
     }
 }
