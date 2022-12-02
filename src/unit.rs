@@ -24,6 +24,7 @@ use self::abilities::*;
 
 #[derive(Debug, Clone)]
 pub struct UnitBlueprint {
+    pub awareness: f32,
     pub radius: f32,
     pub mass: f32,
     pub movespeed: f32,
@@ -41,6 +42,7 @@ impl UnitBlueprint {
         texture: Rid,
         hitpoints: f32,
         radius: f32,
+        awareness: f32,
         mass: f32,
         movespeed: f32,
         acceleration: f32,
@@ -50,6 +52,7 @@ impl UnitBlueprint {
         Self {
             radius: radius,
             mass: mass,
+            awareness: awareness,
             movespeed: movespeed,
             acceleration: acceleration,
             texture: texture,
@@ -84,10 +87,39 @@ pub struct DeathApproaches {
     pub cleanup_time: f32,
 }
 
-#[derive(Component, Copy, Clone)]
+impl DeathApproaches {
+    pub fn no_corpse() -> Self {
+        Self {
+            spawn_corpse: false,
+            cleanup_corpse_canvas: true,
+            cleanup_time: 0.0,
+        }
+    }
+
+    pub fn new(spawn_corpse: bool, cleanup_corpse: bool, cleanup_time: f32) -> Self {
+        Self {
+            spawn_corpse: spawn_corpse,
+            cleanup_corpse_canvas: cleanup_corpse,
+            cleanup_time: cleanup_time,
+        }
+    }
+}
+
+#[derive(Component, Copy, Clone, Debug)]
 pub struct StunOnHitEffect {
     pub duration: f32,
+    pub stun_texture: Rid,
 }
+
+#[derive(Component, Copy, Clone, Debug)]
+pub struct AntihealOnHitEffect {
+    pub percent_heal_reduction: f32,
+    pub duration: f32,
+    pub texture: Rid,
+}
+
+#[derive(Component, Copy, Clone, Debug)]
+pub struct HealEfficacy(pub f32);
 
 #[derive(Component)]
 pub struct TeamAlignment {
@@ -121,8 +153,7 @@ pub struct AppliedDamage {
 }
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct SlowPoisoned(pub Entity); 
-
+pub struct SlowPoisoned(pub Entity);
 
 #[derive(Component, Clone, Debug, Copy)]
 pub struct MeleeWeapon {
@@ -134,7 +165,6 @@ pub struct MeleeWeapon {
     pub full_swing_time: f32,
 
     pub time_until_weapon_cooled: f32,
-    pub stun_duration: f32,
     pub cleave_degrees: f32,
 }
 
@@ -172,11 +202,6 @@ pub struct TargetedProjectile {
     pub contact_dist: f32,
     pub poison_option: Option<SlowPoisonAttack>,
     pub originating_weapon: ProjectileWeapon,
-}
-
-#[derive(Component)]
-pub struct Channeling {
-    pub duration: f32,
 }
 
 #[derive(Component)]
@@ -258,10 +283,19 @@ pub fn apply_damages(
         &mut Hitpoints,
         Option<&Armor>,
         Option<&MagicArmor>,
+        Option<&HealEfficacy>,
     )>,
     delta: Res<DeltaPhysics>,
 ) {
-    for (entity, mut damages, mut hitpoints, armor_option, magic_armor_option) in query.iter_mut() {
+    for (
+        entity,
+        mut damages,
+        mut hitpoints,
+        armor_option,
+        magic_armor_option,
+        heal_efficacy_option,
+    ) in query.iter_mut()
+    {
         let mut i = 0;
         while i < damages.damages.len() && !damages.damages.is_empty() {
             let mut damage = damages.damages.get_mut(i).unwrap();
@@ -274,6 +308,10 @@ pub fn apply_damages(
                 } else if damage.damage_type == DamageType::Magic {
                     if let Some(magic_armor) = magic_armor_option {
                         damage.damage *= 1. - magic_armor.percent_resist;
+                    }
+                } else if damage.damage_type == DamageType::Heal {
+                    if let Some(heal_efficacy) = heal_efficacy_option {
+                        damage.damage *= heal_efficacy.0;
                     }
                 }
                 hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp - damage.damage);
@@ -299,43 +337,47 @@ pub fn resolve_death(
     mut commands: Commands,
     query: Query<(
         Entity,
-        &Position,
         &DeathApproaches,
+        Option<&Position>,
         Option<&crate::graphics::Renderable>,
         Option<&crate::graphics::animation::AnimatedSprite>,
         Option<&crate::graphics::ScaleSprite>,
     )>,
 ) {
-    for (ent, position, death, render_option, animated_sprite_option, scale_option) in query.iter()
+    for (ent, death, position_option, render_option, animated_sprite_option, scale_option) in
+        query.iter()
     {
-        if death.spawn_corpse {
-            if let Some(sprite) = animated_sprite_option {
-                let mut animated_sprite = crate::graphics::animation::AnimatedSprite::default();
-                animated_sprite.texture = sprite.texture;
+        if let Some(position) = position_option {
+            if death.spawn_corpse {
+                if let Some(sprite) = animated_sprite_option {
+                    let mut animated_sprite = crate::graphics::animation::AnimatedSprite::default();
+                    animated_sprite.texture = sprite.texture;
 
-                // Negative timeout will be ignored and discarded by timeout system
-                let mut timeout = death.cleanup_time;
-                if !death.cleanup_corpse_canvas {
-                    timeout = -1.0
-                }
+                    // Negative timeout will be ignored and discarded by timeout system
+                    let mut timeout = death.cleanup_time;
+                    if !death.cleanup_corpse_canvas {
+                        timeout = -1.0
+                    }
 
-                let mut scale = crate::graphics::ScaleSprite(Vector2::ONE);
-                if let Some(scale_existing) = scale_option {
-                    scale.0 = scale_existing.0;
+                    let mut scale = crate::graphics::ScaleSprite(Vector2::ONE);
+                    if let Some(scale_existing) = scale_option {
+                        scale.0 = scale_existing.0;
+                    }
+                    commands
+                        .spawn()
+                        .insert(crate::graphics::NewCanvasItemDirective {})
+                        .insert(animated_sprite)
+                        .insert(Position { pos: position.pos })
+                        .insert(ExpirationTimer(timeout))
+                        .insert(crate::graphics::animation::PlayAnimationDirective {
+                            animation_name: "death".to_string(),
+                            is_one_shot: true,
+                        })
+                        .insert(scale);
                 }
-                commands
-                    .spawn()
-                    .insert(crate::graphics::NewCanvasItemDirective {})
-                    .insert(animated_sprite)
-                    .insert(Position { pos: position.pos })
-                    .insert(ExpirationTimer(timeout))
-                    .insert(crate::graphics::animation::PlayAnimationDirective {
-                        animation_name: "death".to_string(),
-                        is_one_shot: true,
-                    })
-                    .insert(scale);
             }
         }
+
         commands.entity(ent).despawn();
         if let Some(renderable) = render_option {
             commands

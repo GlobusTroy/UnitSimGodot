@@ -1,7 +1,4 @@
-use crate::{
-    physics::*,
-    unit::{actions::PerformingActionState, Channeling},
-};
+use crate::physics::*;
 use bevy_ecs::prelude::*;
 use gdnative::{api::VisualServer, prelude::*};
 
@@ -30,14 +27,15 @@ pub struct FlippableSprite {
 #[derive(Component)]
 pub struct ScaleSprite(pub Vector2);
 
- 
 #[derive(Component)]
 pub struct AlphaSprite(pub f32);
 
 #[derive(Component)]
-pub struct ModulateSprite{pub r: f32, pub b: f32, pub g: f32}
-
-
+pub struct ModulateSprite {
+    pub r: f32,
+    pub b: f32,
+    pub g: f32,
+}
 
 #[derive(Default)]
 pub struct Delta {

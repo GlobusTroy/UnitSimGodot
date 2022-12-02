@@ -110,7 +110,7 @@ pub struct AnimatedSprite {
     pub is_one_shot: bool,
 }
 
-impl AnimatedSprite{
+impl AnimatedSprite {
     pub fn new(texture: Rid) -> Self {
         let mut new = AnimatedSprite::default();
         new.texture = texture;
@@ -155,7 +155,7 @@ pub fn animate_sprites(
         Option<&TeamAlignment>,
         Option<&Hitpoints>,
         Option<&super::AlphaSprite>,
-        Option<&super::ModulateSprite>
+        Option<&super::ModulateSprite>,
     )>,
     delta: Res<Delta>,
     library: Res<AnimationLibrary>,

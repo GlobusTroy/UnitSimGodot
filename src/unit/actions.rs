@@ -7,7 +7,10 @@ use crate::{
     util::true_distance,
 };
 
-use super::{effects::Effect, Hitpoints, Stunned, TeamAlignment, SlowPoisoned};
+use super::{
+    effects::{BuffHolder, Effect},
+    Hitpoints, SlowPoisoned, Stunned, TeamAlignment,
+};
 
 #[derive(Bundle)]
 pub struct ActionBundle {
@@ -120,6 +123,7 @@ pub struct TargetFlags {
     pub ignore_no_buff: bool,
     pub target_enemies: bool,
     pub target_allies: bool,
+    pub target_furthest: bool,
 }
 
 impl TargetFlags {
@@ -130,6 +134,29 @@ impl TargetFlags {
             ignore_no_buff: false,
             target_enemies: true,
             target_allies: false,
+            target_furthest: false,
+        }
+    }
+
+    pub fn furthest_enemy() -> Self {
+        Self {
+            ignore_full_health: false,
+            ignore_no_debuff: false,
+            ignore_no_buff: false,
+            target_enemies: true,
+            target_allies: false,
+            target_furthest: true,
+        }
+    }
+
+    pub fn normal_buff() -> Self {
+        Self {
+            ignore_full_health: false,
+            ignore_no_debuff: false,
+            ignore_no_buff: false,
+            target_enemies: false,
+            target_allies: true,
+            target_furthest: false,
         }
     }
 
@@ -140,6 +167,7 @@ impl TargetFlags {
             ignore_no_buff: false,
             target_enemies: false,
             target_allies: true,
+            target_furthest: false,
         }
     }
 
@@ -150,6 +178,7 @@ impl TargetFlags {
             ignore_no_buff: false,
             target_enemies: false,
             target_allies: true,
+            target_furthest: false,
         }
     }
 }
@@ -204,6 +233,7 @@ pub fn performing_action_state(
     )>,
     mut apply_query: Query<&mut super::effects::ResolveEffectsBuffer>,
     pos_query: Query<(&Position, &Radius)>,
+    alignment_query: Query<&TeamAlignment>,
     spatial: Res<SpatialHashTable>,
     delta: Res<DeltaPhysics>,
 ) {
@@ -272,6 +302,19 @@ pub fn performing_action_state(
                                                         .contains(potential_splash_target)
                                                     {
                                                         continue;
+                                                    }
+
+                                                    if let Ok(alignment1) = alignment_query.get(ent)
+                                                    {
+                                                        if let Ok(alignment2) = alignment_query
+                                                            .get(*potential_splash_target)
+                                                        {
+                                                            if alignment1.alignment
+                                                                == alignment2.alignment
+                                                            {
+                                                                continue;
+                                                            }
+                                                        }
                                                     }
                                                     if let Ok((
                                                         splash_target_pos,
@@ -369,6 +412,9 @@ pub fn performing_action_state(
                 channeling.total_time_channeled = 0.0;
                 channeling.effect_applied = false;
             }
+        } else {
+            // Performing an invalid action
+            commands.entity(ent).remove::<PerformingActionState>();
         }
     }
 }
@@ -388,7 +434,9 @@ pub fn target_units(
     >,
     pos_query: Query<(&Position, &Radius)>,
     alignment_query: Query<&TeamAlignment>,
-    debuffed_query: Query<Entity, Or<(With<Stunned>, With<SlowPoisoned>)>>,
+    buff_holder_query: Query<&BuffHolder>,
+    buff_query: Query<&super::effects::BuffType>,
+
     health_query: Query<&Hitpoints>,
     neighbor_cache: Res<crate::physics::spatial_structures::SpatialNeighborsCache>,
 ) {
@@ -399,6 +447,9 @@ pub fn target_units(
             {
                 if let Ok((pos, rad)) = pos_query.get(ent) {
                     let mut min_dist = f32::MAX;
+                    if target_flags.target_furthest {
+                        min_dist = 0.0;
+                    }
                     let mut cur_target = ent;
                     if let Some(neighbors) = neighbor_cache.get_neighbors(&ent, range.0) {
                         for neighbor in neighbors.iter() {
@@ -425,7 +476,7 @@ pub fn target_units(
                                 continue;
                             }
                             if target_flags.ignore_no_debuff
-                                && !has_debuff(neighbor, &debuffed_query)
+                                && !has_debuff(neighbor, &buff_holder_query, &buff_query)
                             {
                                 continue;
                             }
@@ -438,7 +489,10 @@ pub fn target_units(
                                     rad.r,
                                     target_rad.r,
                                 );
-                                if dist < min_dist {
+                                if !target_flags.target_furthest && dist < min_dist {
+                                    min_dist = dist;
+                                    cur_target = *neighbor;
+                                } else if target_flags.target_furthest && dist > min_dist {
                                     min_dist = dist;
                                     cur_target = *neighbor;
                                 }
@@ -467,10 +521,17 @@ pub fn target_units(
 
 fn has_debuff(
     ent: &Entity,
-    debuff_query: &Query<Entity, Or<(With<Stunned>, With<SlowPoisoned>)>>,
+    buff_holder_query: &Query<&BuffHolder>,
+    buff_query: &Query<&super::effects::BuffType>,
 ) -> bool {
-    if let Ok(_) = debuff_query.get(*ent) {
-        return true;
+    if let Ok(holder) = buff_holder_query.get(*ent) {
+        for buff_ent in holder.set.iter() {
+            if let Ok(buff) = buff_query.get(*buff_ent) {
+                if buff.is_debuff {
+                    return true;
+                }
+            }
+        }
     }
     return false;
 }

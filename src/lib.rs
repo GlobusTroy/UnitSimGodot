@@ -43,6 +43,9 @@ pub struct ECSWorld {
 
     #[property]
     draw_debug: bool,
+
+    #[property]
+    victor: i32,
 }
 
 pub struct Clock(pub u64);
@@ -55,20 +58,21 @@ impl ECSWorld {
             "dispose1",
             SystemStage::parallel()
                 .with_system(util::expire_entities)
-                //.with_system(effects::buff_timer)
+                .with_system(unit::resolve_death),
         );
         schedule_physics.add_stage(
             "dispose2",
             SystemStage::parallel()
                 .with_system(effects::buff_timer)
-                .with_system(actions::action_cooldown)
-                .with_system(unit::resolve_death)
+                .with_system(effects::percent_cooldown_speedup)
+                .with_system(actions::action_cooldown),
         );
         schedule_physics.add_stage(
             "effects",
             SystemStage::parallel()
                 .with_system(physics::physics_integrate)
                 .with_system(effects::resolve_effects)
+                .with_system(effects::apply_teleport),
         );
         schedule_physics.add_stage(
             "apply",
@@ -76,10 +80,14 @@ impl ECSWorld {
                 .with_system(apply_damages)
                 .with_system(effects::apply_stat_buffs)
                 .with_system(effects::percent_damage_over_time)
+                .with_system(effects::apply_stun_buff)
                 .with_system(util::copy_target_position)
                 // BUILD SPATIAL HASH
                 .with_system(build_spatial_hash_table),
-
+        );
+        schedule_physics.add_stage(
+            "override",
+            SystemStage::parallel().with_system(effects::set_stats_directly),
         );
         schedule_physics.add_stage(
             "detect_collisions",
@@ -114,7 +122,7 @@ impl ECSWorld {
                 .with_system(projectiles::projectile_homing)
                 .with_system(projectiles::projectile_contact)
                 .with_system(boid::update_boid_params_to_stats)
-                .with_system(kite_conductor), 
+                .with_system(kite_conductor),
         );
         schedule_behavior.add_stage(
             "boid/perform",
@@ -165,6 +173,7 @@ impl ECSWorld {
             particle_library: particles::ParticleLibrary::new(),
             running: false,
             draw_debug: false,
+            victor: -1,
         }
     }
 
@@ -214,6 +223,7 @@ impl ECSWorld {
         texture: Rid,
         hitpoints: f32,
         radius: f32,
+        awareness: f32,
         mass: f32,
         movespeed: f32,
         acceleration: f32,
@@ -224,6 +234,7 @@ impl ECSWorld {
             texture,
             hitpoints,
             radius,
+            awareness,
             mass,
             movespeed,
             acceleration,
@@ -243,7 +254,6 @@ impl ECSWorld {
         cooldown: f32,
         impact_time: f32,
         swing_time: f32,
-        stun_duration: f32,
         cleave_degrees: f32,
     ) {
         let weapon = Weapon::Melee(MeleeWeapon {
@@ -253,7 +263,6 @@ impl ECSWorld {
             impact_time: impact_time,
             full_swing_time: swing_time,
             time_until_weapon_cooled: 0.0,
-            stun_duration: stun_duration,
             cleave_degrees: cleave_degrees,
         });
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
@@ -268,16 +277,64 @@ impl ECSWorld {
         percent_damage: f32,
         duration: f32,
         movement_multiplier: f32,
-        texture: Rid
+        texture: Rid,
     ) {
         let poison = SlowPoisonAttack {
             percent_damage: percent_damage,
             duration: duration,
-            speed_multiplier: movement_multiplier,
+            movement_debuff: movement_multiplier,
             poison_texture: texture,
         };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::SlowPoison(poison));
+        }
+    }
+
+    #[method]
+    fn add_confusion_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        set_acceleration: f32,
+        duration: f32,
+        texture: Rid,
+    ) {
+        let confusion = abilities::ConfusionAttack {
+            set_acceleration: set_acceleration,
+            duration: duration,
+            texture: texture,
+        };
+
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Confusion(confusion));
+        }
+    }
+
+    #[method]
+    fn add_stun_to_blueprint(&mut self, blueprint_id: usize, duration: f32, texture: Rid) {
+        let stun = StunOnHitEffect {
+            duration: duration,
+            stun_texture: texture,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Stun(stun));
+        }
+    }
+
+    #[method]
+    fn add_antiheal_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        percent_heal_reduction: f32,
+        duration: f32,
+        texture: Rid,
+    ) {
+        let antiheal = AntihealOnHitEffect {
+            duration: duration,
+            texture: texture,
+            percent_heal_reduction: percent_heal_reduction,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::AntiHeal(antiheal));
         }
     }
 
@@ -351,6 +408,78 @@ impl ECSWorld {
         };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::MagicMissile(ability));
+        }
+    }
+
+    #[method]
+    fn add_whirlwind_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        damage: f32,
+        range: f32,
+        cooldown: f32,
+        impact_time: f32,
+        swing_time: f32,
+    ) {
+        let ability = abilities::WhirlwindAbility {
+            damage: damage,
+            range: range,
+            cooldown: cooldown,
+            impact_time: impact_time,
+            swing_time: swing_time,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Whirlwind(ability));
+        }
+    }
+
+    #[method]
+    fn add_overdrive_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        percent_cooldown_reduction: f32,
+        range: f32,
+        cooldown: f32,
+        duration: f32,
+        impact_time: f32,
+        swing_time: f32,
+        effect_texture: Rid,
+    ) {
+        let ability = abilities::OverdriveAbility {
+            percent_cooldown_speedup: percent_cooldown_reduction,
+            range: range,
+            cooldown: cooldown,
+            duration: duration,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            effect_texture: effect_texture,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Overdrive(ability));
+        }
+    }
+
+    #[method]
+    fn add_backstab_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        damage: f32,
+        range: f32,
+        cooldown: f32,
+        impact_time: f32,
+        swing_time: f32,
+        texture: Rid,
+    ) {
+        let ability = abilities::BackstabAbility {
+            damage: damage,
+            range: range,
+            cooldown: cooldown,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            texture: texture,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Backstab(ability));
         }
     }
 
@@ -469,7 +598,7 @@ impl ECSWorld {
             })
             .insert(VectorAlignmentBoid {
                 alignment_radius: 8.,
-                multiplier: 2.,
+                multiplier: 1.0,
             })
             .insert(AvoidWallsBoid {
                 avoidance_radius: 4.,
@@ -504,7 +633,9 @@ impl ECSWorld {
                 damages: Vec::new(),
             })
             .insert(effects::ResolveEffectsBuffer { vec: Vec::new() })
-            .insert(effects::BuffHolder { set: std::collections::HashSet::new() })
+            .insert(effects::BuffHolder {
+                set: std::collections::HashSet::new(),
+            })
             .insert(Armor {
                 armor: blueprint.armor,
                 base: blueprint.armor,
@@ -513,10 +644,14 @@ impl ECSWorld {
                 percent_resist: blueprint.magic_resist,
                 base: blueprint.magic_resist,
             })
+            .insert(HealEfficacy(1.0))
             .insert(AttackEnemyBehavior {})
             .insert(Hitpoints {
                 max_hp: blueprint.hitpoints,
                 hp: blueprint.hitpoints,
+            })
+            .insert(SpatialAwareness {
+                radius: blueprint.awareness,
             })
             .id();
 
@@ -553,17 +688,12 @@ impl ECSWorld {
                 // Add weapon to unit actions
                 unit_actions.vec.push(melee_attack);
 
-                self.world
-                    .entity_mut(ent)
-                    .insert(ChargeAtEnemyBoid {
-                        target: None,
-                        target_timer: 0.0,
-                        charge_radius: melee_weapon.range * 3.,
-                        multiplier: 5.,
-                    })
-                    .insert(SpatialAwareness {
-                        radius: blueprint.radius + self.terrain_map.cell_size,
-                    });
+                self.world.entity_mut(ent).insert(ChargeAtEnemyBoid {
+                    target: None,
+                    target_timer: 0.0,
+                    charge_radius: melee_weapon.range * 3.,
+                    multiplier: 5.,
+                });
             } else if let Weapon::Projectile(projectile_weapon) = weapon {
                 let projectile_attack = self
                     .world
@@ -600,16 +730,10 @@ impl ECSWorld {
                 // Add weapon to unit actions
                 unit_actions.vec.push(projectile_attack);
 
-                self.world
-                    .entity_mut(ent)
-                    .insert(KiteNearestEnemyBoid {
-                        multiplier: 5.,
-                        kite_radius: projectile_weapon.range,
-                    })
-                    .insert(SpatialAwareness {
-                        radius: (blueprint.radius + self.terrain_map.cell_size)
-                            .max(projectile_weapon.range * 1.5 + blueprint.radius),
-                    });
+                self.world.entity_mut(ent).insert(KiteNearestEnemyBoid {
+                    multiplier: 10.,
+                    kite_radius: projectile_weapon.range,
+                });
             }
         }
 
@@ -636,6 +760,7 @@ impl ECSWorld {
                     .id();
                 unit_actions.vec.push(cleanse_spell);
             } else if let UnitAbility::SlowPoison(poison) = spell {
+                // Unstable; depends on attack being the first action in unit list
                 if let Some(main_attack) = unit_actions.vec.get_mut(0) {
                     if let Some(mut effects) = self
                         .world
@@ -643,6 +768,17 @@ impl ECSWorld {
                         .get_mut::<actions::OnHitEffects>()
                     {
                         effects.vec.push(effects::Effect::PoisonEffect(*poison));
+                    }
+                }
+            } else if let UnitAbility::Stun(stun) = spell {
+                // Unstable; depends on attack being the first action in unit list
+                if let Some(main_attack) = unit_actions.vec.get_mut(0) {
+                    if let Some(mut effects) = self
+                        .world
+                        .entity_mut(*main_attack)
+                        .get_mut::<actions::OnHitEffects>()
+                    {
+                        effects.vec.push(effects::Effect::StunEffect(*stun));
                     }
                 }
             } else if let UnitAbility::Heal(heal) = spell {
@@ -667,12 +803,143 @@ impl ECSWorld {
                     .id();
                 unit_actions.vec.push(heal_spell);
             } else if let UnitAbility::MagicMissile(missile) = spell {
-                self.world
-                    .entity_mut(ent)
-                    .insert(*missile)
-                    .insert(SpatialAwareness {
-                        radius: missile.range * 2.,
-                    });
+                let missile_attack = self
+                    .world
+                    .spawn()
+                    .insert_bundle(actions::ActionBundle::new(
+                        actions::SwingDetails {
+                            impact_time: missile.impact_time,
+                            complete_time: missile.swing_time,
+                            cooldown_time: missile.cooldown,
+                        },
+                        missile.range,
+                        actions::ImpactType::Projectile,
+                        actions::TargetFlags::normal_attack(),
+                        "cast".to_string(),
+                    ))
+                    .insert(actions::OnHitEffects {
+                        vec: vec![effects::Effect::DamageEffect(DamageInstance {
+                            damage: missile.damage,
+                            delay: 0.0,
+                            damage_type: DamageType::Magic,
+                        })],
+                    })
+                    .insert(projectiles::ActionProjectileDetails {
+                        projectile_speed: 175.,
+                        projectile_scale: 0.6,
+                        projectile_texture: missile.effect_texture,
+                        contact_distance: 12.0,
+                    })
+                    .id();
+
+                // Add weapon to unit actions
+                unit_actions.vec.push(missile_attack);
+            } else if let UnitAbility::Whirlwind(missile) = spell {
+                let whirlwind = self
+                    .world
+                    .spawn()
+                    .insert_bundle(actions::ActionBundle::new(
+                        actions::SwingDetails {
+                            impact_time: missile.impact_time,
+                            complete_time: missile.swing_time,
+                            cooldown_time: missile.cooldown,
+                        },
+                        missile.range,
+                        actions::ImpactType::Instant,
+                        actions::TargetFlags::normal_attack(),
+                        "cast".to_string(),
+                    ))
+                    .insert(actions::OnHitEffects {
+                        vec: vec![effects::Effect::DamageEffect(DamageInstance {
+                            damage: missile.damage,
+                            delay: 0.0,
+                            damage_type: DamageType::Magic,
+                        })],
+                    })
+                    .insert(actions::Cleave {
+                        angle_degrees: 360.,
+                    })
+                    .id();
+
+                // Add weapon to unit actions
+                unit_actions.vec.push(whirlwind);
+            } else if let UnitAbility::Overdrive(overdrive) = spell {
+                let heal_spell = self
+                    .world
+                    .spawn()
+                    .insert_bundle(actions::ActionBundle::new(
+                        actions::SwingDetails {
+                            impact_time: overdrive.impact_time,
+                            complete_time: overdrive.swing_time,
+                            cooldown_time: overdrive.cooldown,
+                        },
+                        overdrive.range,
+                        actions::ImpactType::Instant,
+                        actions::TargetFlags::normal_buff(),
+                        "cast".to_string(),
+                    ))
+                    .insert(actions::EffectTexture(overdrive.effect_texture))
+                    .insert(actions::OnHitEffects {
+                        vec: vec![effects::Effect::OverdriveEffect(*overdrive)],
+                    })
+                    .id();
+                unit_actions.vec.push(heal_spell);
+            } else if let UnitAbility::Confusion(confusion) = spell {
+                if let Some(main_attack) = unit_actions.vec.get_mut(0) {
+                    if let Some(mut effects) = self
+                        .world
+                        .entity_mut(*main_attack)
+                        .get_mut::<actions::OnHitEffects>()
+                    {
+                        effects
+                            .vec
+                            .push(effects::Effect::ConfusionEffect(*confusion));
+                    }
+                }
+            } else if let UnitAbility::AntiHeal(antiheal) = spell {
+                if let Some(main_attack) = unit_actions.vec.get_mut(0) {
+                    if let Some(mut effects) = self
+                        .world
+                        .entity_mut(*main_attack)
+                        .get_mut::<actions::OnHitEffects>()
+                    {
+                        effects.vec.push(effects::Effect::AntiHeal(*antiheal));
+                    }
+                }
+            } else if let UnitAbility::Backstab(backstab) = spell {
+                let whirlwind = self
+                    .world
+                    .spawn()
+                    .insert_bundle(actions::ActionBundle::new(
+                        actions::SwingDetails {
+                            impact_time: backstab.impact_time,
+                            complete_time: backstab.swing_time,
+                            cooldown_time: backstab.cooldown,
+                        },
+                        backstab.range,
+                        actions::ImpactType::Instant,
+                        actions::TargetFlags::furthest_enemy(),
+                        "cast".to_string(),
+                    ))
+                    .insert(actions::OnHitEffects {
+                        vec: vec![
+                            effects::Effect::DamageEffect(DamageInstance {
+                                damage: backstab.damage,
+                                delay: 0.0,
+                                damage_type: DamageType::Normal,
+                            }),
+                            effects::Effect::TeleportBehindTargetEffect(ent),
+                            effects::Effect::Visual(effects::SpawnVisualEffect {
+                                texture: backstab.texture,
+                                duration: 1.0,
+                            }),
+                        ],
+                    })
+                    .insert(actions::Cooldown(backstab.cooldown))
+                    .id();
+
+                // Add weapon to unit actions
+                unit_actions.vec.push(whirlwind);
             }
         }
 
@@ -693,6 +960,23 @@ impl ECSWorld {
         self.world.insert_resource(self.terrain_map.clone());
         self.clock += 1;
         self.schedule_logic.run(&mut self.world);
+        self.update_victor();
+    }
+
+    fn update_victor(&mut self) {
+        let mut victor: i32 = -1;
+        let mut living_teams = std::collections::HashSet::<TeamValue>::new();
+        for alignment in self.world.query::<&TeamAlignment>().iter(&self.world) {
+            living_teams.insert(alignment.alignment);
+            if let TeamValue::Team(intval) = alignment.alignment {
+                victor = intval as i32;
+            }
+        }
+
+        // If only one remaining player
+        if living_teams.len() < 2 {
+            self.victor = victor;
+        }
     }
 
     fn _process_new_canvas_items(&mut self) {
@@ -735,7 +1019,6 @@ impl ECSWorld {
         self.world.insert_resource(Delta { seconds: delta });
 
         self._process_new_canvas_items();
-        //self._process_new_particle_effects();
         let mut entities: Vec<Entity> = Vec::new();
         for (entity, item) in self
             .world
