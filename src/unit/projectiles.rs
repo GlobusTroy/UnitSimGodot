@@ -67,7 +67,6 @@ pub fn spawn_projectile(
 }
 
 pub fn projectile_homing(
-    mut commands: Commands,
     mut query: Query<(
         &Position,
         &mut Velocity,
@@ -98,9 +97,18 @@ pub fn projectile_contact(
     splash_query: Query<(&Position, &Radius)>,
     origin_effect_query: Query<&super::actions::OnHitEffects>,
     spatial: Res<crate::physics::spatial_structures::SpatialHashTable>,
+    mut events: ResMut<crate::event::EventQueue>,
 ) {
     for (ent, position, projectile, details, splash_option) in query.iter_mut() {
         if position.pos.distance_to(projectile.target_pos) <= details.contact_distance {
+            // Event Cue
+            events.0.push(crate::event::EventCue {
+                event: "impact".to_string(),
+                location: position.pos,
+                texture: details.projectile_texture
+            });
+
+
             //Apply effects
             if let Ok(mut buffer) = apply_query.get_mut(projectile.target) {
                 if let Ok(effects) = origin_effect_query.get(projectile.origin_action) {

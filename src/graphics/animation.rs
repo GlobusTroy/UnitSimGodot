@@ -5,7 +5,7 @@ use gdnative::{api::VisualServer, prelude::*};
 
 use crate::{
     physics::{Radius, Velocity},
-    unit::{Hitpoints, TeamAlignment, TeamValue},
+    unit::{Hitpoints, TeamAlignment, TeamValue, BlueprintId},
 };
 
 use super::{Delta, Renderable, ScaleSprite};
@@ -127,7 +127,9 @@ pub struct PlayAnimationDirective {
 pub fn execute_play_animation_directive(
     mut commands: Commands,
     mut query: Query<(Entity, &PlayAnimationDirective, &mut AnimatedSprite)>,
+    event_query: Query<&crate::physics::Position>,
     library: Res<AnimationLibrary>,
+    mut events: ResMut<crate::event::EventQueue>,
 ) {
     for (entity, directive, mut sprite) in query.iter_mut() {
         sprite.animation_name = directive.animation_name.to_string();
@@ -140,7 +142,15 @@ pub fn execute_play_animation_directive(
             sprite.animation_length =
                 library.get_animation_length(sprite.texture, sprite.animation_name.to_string());
         }
-        commands.entity(entity).remove::<PlayAnimationDirective>();
+
+        if let Ok(pos) = event_query.get(entity) {
+            events.0.push(crate::event::EventCue {
+                event: directive.animation_name.clone(),
+                location: pos.pos,
+                texture: sprite.texture
+            });
+        }
+       commands.entity(entity).remove::<PlayAnimationDirective>();
     }
 }
 

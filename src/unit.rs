@@ -22,6 +22,9 @@ use crate::{
 
 use self::abilities::*;
 
+#[derive(Component, Debug, Clone, Copy)]
+pub struct BlueprintId(pub usize);
+
 #[derive(Debug, Clone)]
 pub struct UnitBlueprint {
     pub awareness: f32,

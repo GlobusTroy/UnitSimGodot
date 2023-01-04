@@ -7,8 +7,8 @@ use crate::{
 };
 
 use super::{
-    abilities::OverdriveAbility,
-    actions::{Cooldown, TargetEntity, UnitActions},
+    abilities::{DamageBuffAbility, OverdriveAbility},
+    actions::{Cooldown, OnHitEffects, TargetEntity, UnitActions},
     Acceleration, AntihealOnHitEffect, AppliedDamage, DamageInstance, DeathApproaches, MagicArmor,
     StunOnHitEffect,
 };
@@ -17,10 +17,12 @@ use super::{
 pub enum Effect {
     DamageEffect(DamageInstance),
     PoisonEffect(super::abilities::SlowPoisonAttack),
+    ArmorReductionEffect(super::abilities::ArmorReductionAttack),
     StunEffect(StunOnHitEffect),
     CleanseEffect,
     HealEffect(f32),
     OverdriveEffect(OverdriveAbility),
+    DamageBuffEffect(DamageBuffAbility),
     ConfusionEffect(super::abilities::ConfusionAttack),
     TeleportBehindTargetEffect(Entity),
     AntiHeal(AntihealOnHitEffect),
@@ -54,6 +56,9 @@ pub struct BuffHolder {
 }
 
 #[derive(Component, Clone, Debug)]
+pub struct FlatDamageBuff(pub f32);
+
+#[derive(Component, Clone, Debug)]
 pub struct PercentCooldownReduction(pub f32);
 
 #[derive(Component, Clone, Debug)]
@@ -71,7 +76,7 @@ pub struct SpawnVisualEffect {
     pub duration: f32,
 }
 
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, Default)]
 pub struct StatBuff {
     pub armor_buff: f32,
     pub magic_armor_buff: f32,
@@ -85,8 +90,9 @@ pub fn resolve_effects(
     mut query: Query<(Entity, &mut super::effects::ResolveEffectsBuffer)>,
     mut damage_query: Query<&mut crate::unit::AppliedDamage>,
     mut buff_holder_query: Query<&mut BuffHolder>,
-    actions_query: Query<&UnitActions>,
+    mut actions_query: Query<&mut UnitActions>,
     action_query: Query<&Cooldown>,
+    mut action_damage_query: Query<&mut OnHitEffects>,
     buff_query: Query<&BuffType>,
     pos_rad_query: Query<(&crate::physics::Position, &crate::physics::Radius)>,
 ) {
@@ -180,10 +186,61 @@ pub fn resolve_effects(
                     }
                 }
 
+                // DamageBuff
+                Effect::DamageBuffEffect(overdrive) => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        if let Ok(mut actions) = actions_query.get_mut(ent) {
+                            for action in actions.vec.iter_mut() {
+                                if let Ok(mut on_hit_effects) = action_damage_query.get_mut(*action)
+                                {
+                                    let mut new_instance = None;
+                                    let mut index = 0;
+                                    for (i, effect) in on_hit_effects.vec.iter().enumerate() {
+                                        // If damage effect is applied, apply buff to action
+                                        if let Effect::DamageEffect(instance) = effect {
+                                            index = i;
+                                            let mut curr_instance = instance.clone();
+                                            curr_instance.damage += overdrive.damage;
+                                            new_instance = Some(curr_instance);
+                                        }
+                                        break;
+                                    }
+                                    if let Some(instance) = new_instance {
+                                        on_hit_effects.vec.remove(index);
+                                        on_hit_effects.vec.push(Effect::DamageEffect(instance));
+                                    }
+                                }
+                            }
+                            let buff = spawn_visual_buff(
+                                &mut commands,
+                                overdrive.duration,
+                                overdrive.texture,
+                                ent,
+                                ModulateSprite {
+                                    r: 1.0,
+                                    b: 0.2,
+                                    g: 0.8,
+                                },
+                            );
+
+                            buff_holder.set.insert(buff);
+                        }
+                    }
+                }
+
                 // Confusion
                 Effect::ConfusionEffect(confusion) => {
                     if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
                         let buff = spawn_confusion_buff(&mut commands, confusion, ent);
+
+                        buff_holder.set.insert(buff);
+                    }
+                }
+
+                // Armor Reduction Effect
+                Effect::ArmorReductionEffect(reduction) => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        let buff = spawn_armor_debuff(&mut commands, reduction, ent);
 
                         buff_holder.set.insert(buff);
                     }
@@ -274,6 +331,43 @@ fn spawn_antiheal_buff(
         })
         .insert(crate::graphics::NewCanvasItemDirective {})
         .insert(AnimatedSprite::new(antiheal.texture))
+        .insert(crate::graphics::animation::PlayAnimationDirective {
+            animation_name: "fly".to_string(),
+            is_one_shot: false,
+        })
+        .id();
+    buff
+}
+
+fn spawn_armor_debuff(
+    commands: &mut Commands,
+    debuff: &super::abilities::ArmorReductionAttack,
+    ent: Entity,
+) -> Entity {
+    let buff = commands
+        .spawn()
+        .insert(BuffType { is_debuff: true })
+        .insert(BuffTimer(debuff.duration))
+        .insert(TargetEntity { entity: ent })
+        .insert(MirrorTargetPosition {})
+        .insert(StatBuff {
+            armor_buff: -debuff.armor_reduction,
+            magic_armor_buff: -debuff.magic_armor_reduction,
+            speed_buff: 0.0,
+            acceleration_buff: 0.0,
+            heal_efficacy_mult_buff: 0.0,
+        })
+        .insert(crate::physics::Position { pos: Vector2::ZERO })
+        .insert(crate::physics::Velocity { v: Vector2::ZERO })
+        .insert(ScaleSprite(Vector2 { x: 0.75, y: 0.75 }))
+        .insert(crate::graphics::AlphaSprite(0.35))
+        .insert(crate::graphics::ModulateSprite {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+        })
+        .insert(crate::graphics::NewCanvasItemDirective {})
+        .insert(AnimatedSprite::new(debuff.texture))
         .insert(crate::graphics::animation::PlayAnimationDirective {
             animation_name: "fly".to_string(),
             is_one_shot: false,
@@ -516,6 +610,7 @@ pub fn apply_stun_buff(
         if let Ok(_) = target_query.get_mut(ent_target.entity) {
             commands
                 .entity(ent_target.entity)
+                // TODO: Make proper action entity instead of passing ent
                 .insert(super::actions::PerformingActionState { action: ent });
         }
     }

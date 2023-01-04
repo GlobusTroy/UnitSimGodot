@@ -2,7 +2,7 @@ use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
 use crate::{
-    graphics::FlippableSprite,
+    graphics::{FlippableSprite, animation::AnimatedSprite},
     physics::{spatial_structures::SpatialHashTable, DeltaPhysics, Position, Radius, Velocity},
     util::true_distance,
 };
@@ -218,6 +218,7 @@ pub fn performing_action_state(
     mut commands: Commands,
     query: Query<(Entity, &PerformingActionState, &Position, &Radius)>,
     mut flip_query: Query<&mut FlippableSprite>,
+    texture_query: Query<&AnimatedSprite>,
     mut action_query: Query<(
         Entity,
         &mut ChannelingDetails,
@@ -236,6 +237,7 @@ pub fn performing_action_state(
     alignment_query: Query<&TeamAlignment>,
     spatial: Res<SpatialHashTable>,
     delta: Res<DeltaPhysics>,
+    mut events: ResMut<crate::event::EventQueue>,
 ) {
     for (ent, performer, position, radius) in query.iter() {
         if let Ok((
@@ -276,6 +278,15 @@ pub fn performing_action_state(
                                 buffer.vec.push(*effect);
                             }
                         }
+                        // Event Cue
+                        if let Ok(texture) = texture_query.get(ent) {
+                            events.0.push(crate::event::EventCue {
+                                event: "impact".to_string(),
+                                location: position.pos,
+                                texture: texture.texture 
+                            });
+                        }
+                        
 
                         // Handle cleave
                         if let Some(cleave) = cleave_option {
@@ -363,6 +374,13 @@ pub fn performing_action_state(
                     }
                     ImpactType::Projectile => {
                         if let Some(details) = projectile_option {
+                            // Event Cue
+                            events.0.push(crate::event::EventCue {
+                                event: "birth".to_string(),
+                                location: position.pos,
+                                texture: details.projectile_texture 
+                            });
+
                             if let Ok((target_position, _)) = pos_query.get(target.entity) {
                                 let mut splash_radius = 0.0;
                                 if let Some(splash) = splash_option {

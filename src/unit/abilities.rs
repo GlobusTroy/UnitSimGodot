@@ -14,7 +14,9 @@ pub enum UnitAbility {
     Overdrive(OverdriveAbility),
     Confusion(ConfusionAttack),
     Backstab(BackstabAbility),
+    DamageBuff(DamageBuffAbility),
     AntiHeal(AntihealOnHitEffect),
+    ArmorReduction(ArmorReductionAttack),
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -83,6 +85,17 @@ pub struct BackstabAbility {
 }
 
 #[derive(Debug, Component, Clone, Copy)]
+pub struct DamageBuffAbility {
+    pub damage: f32,
+    pub range: f32,
+    pub cooldown: f32,
+    pub duration: f32,
+    pub swing_time: f32,
+    pub impact_time: f32,
+    pub texture: Rid,
+}
+
+#[derive(Debug, Component, Clone, Copy)]
 pub struct ConfusionAttack {
     pub set_acceleration: f32,
     pub duration: f32,
@@ -95,4 +108,12 @@ pub struct SlowPoisonAttack {
     pub percent_damage: f32,
     pub movement_debuff: f32,
     pub poison_texture: Rid,
+}
+
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ArmorReductionAttack {
+    pub duration: f32,
+    pub armor_reduction: f32,
+    pub magic_armor_reduction: f32,
+    pub texture: Rid,
 }

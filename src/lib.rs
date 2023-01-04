@@ -1,6 +1,10 @@
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::ReportExecutionOrderAmbiguities;
 use boid::conductors::kite_conductor;
 use gdnative::{api::VisualServer, prelude::*};
+
+mod event;
+use event::*;
 
 mod boid;
 use boid::*;
@@ -56,27 +60,27 @@ impl ECSWorld {
         let mut schedule_physics = Schedule::default();
         schedule_physics.add_stage(
             "dispose1",
-            SystemStage::parallel()
+            SystemStage::single_threaded()
                 .with_system(util::expire_entities)
                 .with_system(unit::resolve_death),
         );
         schedule_physics.add_stage(
             "dispose2",
-            SystemStage::parallel()
+            SystemStage::single_threaded()
                 .with_system(effects::buff_timer)
                 .with_system(effects::percent_cooldown_speedup)
                 .with_system(actions::action_cooldown),
         );
         schedule_physics.add_stage(
             "effects",
-            SystemStage::parallel()
+            SystemStage::single_threaded()
                 .with_system(physics::physics_integrate)
                 .with_system(effects::resolve_effects)
                 .with_system(effects::apply_teleport),
         );
         schedule_physics.add_stage(
             "apply",
-            SystemStage::parallel()
+            SystemStage::single_threaded()
                 .with_system(apply_damages)
                 .with_system(effects::apply_stat_buffs)
                 .with_system(effects::percent_damage_over_time)
@@ -87,11 +91,11 @@ impl ECSWorld {
         );
         schedule_physics.add_stage(
             "override",
-            SystemStage::parallel().with_system(effects::set_stats_directly),
+            SystemStage::single_threaded().with_system(effects::set_stats_directly),
         );
         schedule_physics.add_stage(
             "detect_collisions",
-            SystemStage::parallel()
+            SystemStage::single_threaded()
                 .with_system(detect_collisions)
                 .with_system(build_spatial_neighbors_cache)
                 .with_system(build_flow_fields),
@@ -172,16 +176,22 @@ impl ECSWorld {
             animation_library: animation::AnimationLibrary::new(),
             particle_library: particles::ParticleLibrary::new(),
             running: false,
-            draw_debug: false,
+            draw_debug: true,
             victor: -1,
         }
     }
 
     #[method]
-    fn _ready(&mut self, #[base] _base: &Node2D) {
+    fn _ready(&mut self, #[base] base: &Node2D) {
+        self.setup_event_cue_signal(base);
+        self.world.insert_resource(event::EventQueue(Vec::new()));
         let radii = [4., 16., 64., 256., 512.];
         self.world
             .insert_resource(spatial_structures::SpatialNeighborsRadii(Box::new(radii)));
+    }
+
+    fn setup_event_cue_signal(&mut self, base: &Node2D) {
+        base.add_user_signal("event_cue", VariantArray::default());
     }
 
     #[method]
@@ -287,6 +297,26 @@ impl ECSWorld {
         };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::SlowPoison(poison));
+        }
+    }
+
+    #[method]
+    fn add_armor_debuff_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        armor_debuff: f32,
+        magic_armor_debuff: f32,
+        duration: f32,
+        texture: Rid,
+    ) {
+        let poison = abilities::ArmorReductionAttack {
+            armor_reduction: armor_debuff,
+            magic_armor_reduction: magic_armor_debuff,
+            duration: duration,
+            texture: texture,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::ArmorReduction(poison));
         }
     }
 
@@ -484,6 +514,32 @@ impl ECSWorld {
     }
 
     #[method]
+    fn add_damagebuff_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        damage_buff: f32,
+        range: f32,
+        cooldown: f32,
+        duration: f32,
+        impact_time: f32,
+        swing_time: f32,
+        texture: Rid,
+    ) {
+        let ability = abilities::DamageBuffAbility {
+            damage: damage_buff,
+            range: range,
+            cooldown: cooldown,
+            duration: duration,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            texture: texture,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::DamageBuff(ability));
+        }
+    }
+
+    #[method]
     fn add_projectile_weapon_to_blueprint(
         &mut self,
         blueprint_id: usize,
@@ -566,6 +622,7 @@ impl ECSWorld {
         let ent = self
             .world
             .spawn()
+            .insert(BlueprintId(blueprint_id))
             .insert(NewCanvasItemDirective {})
             .insert(TeamAlignment {
                 alignment: TeamValue::Team(team_id),
@@ -692,7 +749,7 @@ impl ECSWorld {
                     target: None,
                     target_timer: 0.0,
                     charge_radius: melee_weapon.range * 3.,
-                    multiplier: 5.,
+                    multiplier: 1.,
                 });
             } else if let Weapon::Projectile(projectile_weapon) = weapon {
                 let projectile_attack = self
@@ -731,7 +788,7 @@ impl ECSWorld {
                 unit_actions.vec.push(projectile_attack);
 
                 self.world.entity_mut(ent).insert(KiteNearestEnemyBoid {
-                    multiplier: 10.,
+                    multiplier: 4.,
                     kite_radius: projectile_weapon.range,
                 });
             }
@@ -768,6 +825,19 @@ impl ECSWorld {
                         .get_mut::<actions::OnHitEffects>()
                     {
                         effects.vec.push(effects::Effect::PoisonEffect(*poison));
+                    }
+                }
+            } else if let UnitAbility::ArmorReduction(poison) = spell {
+                // Unstable; depends on attack being the first action in unit list
+                if let Some(main_attack) = unit_actions.vec.get_mut(0) {
+                    if let Some(mut effects) = self
+                        .world
+                        .entity_mut(*main_attack)
+                        .get_mut::<actions::OnHitEffects>()
+                    {
+                        effects
+                            .vec
+                            .push(effects::Effect::ArmorReductionEffect(*poison));
                     }
                 }
             } else if let UnitAbility::Stun(stun) = spell {
@@ -940,6 +1010,29 @@ impl ECSWorld {
 
                 // Add weapon to unit actions
                 unit_actions.vec.push(whirlwind);
+            } else if let UnitAbility::DamageBuff(buff) = spell {
+                let whirlwind = self
+                    .world
+                    .spawn()
+                    .insert_bundle(actions::ActionBundle::new(
+                        actions::SwingDetails {
+                            impact_time: buff.impact_time,
+                            complete_time: buff.swing_time,
+                            cooldown_time: buff.cooldown,
+                        },
+                        buff.range,
+                        actions::ImpactType::Instant,
+                        actions::TargetFlags::normal_buff(),
+                        "cast".to_string(),
+                    ))
+                    .insert(actions::EffectTexture(buff.texture))
+                    .insert(actions::OnHitEffects {
+                        vec: vec![effects::Effect::DamageBuffEffect(*buff)],
+                    })
+                    .id();
+
+                // Add weapon to unit actions
+                unit_actions.vec.push(whirlwind);
             }
         }
 
@@ -950,7 +1043,7 @@ impl ECSWorld {
 
     #[method]
     #[profiled]
-    fn _physics_process(&mut self, delta: f32) {
+    fn _physics_process(&mut self, #[base] base: &Node2D, delta: f32) {
         if !self.running {
             return;
         }
@@ -1003,6 +1096,19 @@ impl ECSWorld {
         }
     }
 
+    fn _process_event_signal_queue(&mut self, base: &Node2D) {
+        if let Some(queue) = self.world.get_resource::<EventQueue>() {
+            for event in queue.0.iter() {
+                let variant_arr = VariantArray::new();
+                variant_arr.push(event.texture);
+                variant_arr.push(event.event.clone());
+                variant_arr.push(event.location);
+                base.emit_signal("event_cue", &[variant_arr.into_shared().to_variant()]);
+            }
+        }
+        self.world.insert_resource(EventQueue(Vec::new()));
+    }
+
     #[method]
     fn _process_in_place(&mut self) {
         self.world.insert_resource(Delta { seconds: 0f32 });
@@ -1012,13 +1118,14 @@ impl ECSWorld {
 
     #[method]
     #[profiled]
-    fn _process(&mut self, #[base] base: TRef<Node2D>, delta: f32) {
+    fn _process(&mut self, #[base] base: &Node2D, delta: f32) {
         if !self.running {
             return;
         }
         self.world.insert_resource(Delta { seconds: delta });
 
         self._process_new_canvas_items();
+        self._process_event_signal_queue(base);
         let mut entities: Vec<Entity> = Vec::new();
         for (entity, item) in self
             .world

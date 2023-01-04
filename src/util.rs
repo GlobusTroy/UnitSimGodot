@@ -160,7 +160,8 @@ pub fn get_convolution_neighbor_cells_increment(
             out.push(SpatialHashCell(x, y2));
         }
     }
-    for y in cell.1 - convolution_size..cell.1 + convolution_size + 1 {
+    // Don't double count corners
+    for y in cell.1 - convolution_size + 1..cell.1 + convolution_size {
         let x1 = cell.0 - convolution_size;
         let x2 = cell.0 + convolution_size;
         if x1 >= 0 && y >= 0 && x2 <= bounds.0 && y <= bounds.1 {

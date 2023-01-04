@@ -235,7 +235,7 @@ pub fn build_flow_fields(
     terrain: Res<TerrainMap>,
     clock: Res<Clock>,
 ) {
-    if (clock.0 % 24) != 0 {
+    if (clock.0 % 6) != 0 {
         return;
     }
     let mut alignment_to_cells = HashMap::<TeamValue, HashSet<SpatialHashCell>>::new();
@@ -341,7 +341,7 @@ pub fn build_flow_fields(
         }
 
         // Build flow_field from integration field
-        let max_convolution_length: i32 = 5;
+        let max_convolution_length: i32 = 1;
         for cell in integration_field.keys() {
             let mut flow = Vector2::ZERO;
             let integration_val_of_cell =
