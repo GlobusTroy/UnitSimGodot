@@ -7,7 +7,7 @@ use crate::{
 };
 
 use super::{
-    abilities::{DamageBuffAbility, OverdriveAbility},
+    abilities::{DamageBuffAbility, FortifyAbility, OverdriveAbility},
     actions::{Cooldown, OnHitEffects, TargetEntity, UnitActions},
     Acceleration, AntihealOnHitEffect, AppliedDamage, DamageInstance, DeathApproaches, MagicArmor,
     StunOnHitEffect,
@@ -21,6 +21,11 @@ pub enum Effect {
     StunEffect(StunOnHitEffect),
     CleanseEffect,
     HealEffect(f32),
+    HealOverTimeEffect {
+        amount_per_second: f32,
+        duration: f32,
+    },
+    ApplyStatBuffEffect(StatBuff, f32),
     OverdriveEffect(OverdriveAbility),
     DamageBuffEffect(DamageBuffAbility),
     ConfusionEffect(super::abilities::ConfusionAttack),
@@ -56,6 +61,9 @@ pub struct BuffHolder {
 }
 
 #[derive(Component, Clone, Debug)]
+pub struct HealingPerSecond(pub f32);
+
+#[derive(Component, Clone, Debug)]
 pub struct FlatDamageBuff(pub f32);
 
 #[derive(Component, Clone, Debug)]
@@ -76,7 +84,7 @@ pub struct SpawnVisualEffect {
     pub duration: f32,
 }
 
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Copy, Clone, Debug, Default)]
 pub struct StatBuff {
     pub armor_buff: f32,
     pub magic_armor_buff: f32,
@@ -133,6 +141,30 @@ pub fn resolve_effects(
                     }
                 }
 
+                // HEAL OVER TIME
+                Effect::HealOverTimeEffect {
+                    amount_per_second,
+                    duration,
+                } => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        if let Ok(actions) = actions_query.get(ent) {
+                            for action in actions.vec.iter() {
+                                if let Ok(_cooldown) = action_query.get(*action) {
+                                    let buff = commands
+                                        .spawn()
+                                        .insert(BuffType { is_debuff: false })
+                                        .insert(BuffTimer(*duration))
+                                        .insert(TargetEntity { entity: ent })
+                                        .insert(HealingPerSecond(*amount_per_second))
+                                        .id();
+
+                                    buff_holder.set.insert(buff);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // CLEANSE
                 Effect::CleanseEffect => {
                     if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
@@ -154,6 +186,21 @@ pub fn resolve_effects(
                                 .entity(*buff_ent)
                                 .insert(DeathApproaches::no_corpse());
                         }
+                    }
+                }
+
+                // Statbuff
+                Effect::ApplyStatBuffEffect(buff, duration) => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        let buff = commands
+                            .spawn()
+                            .insert(BuffType { is_debuff: false })
+                            .insert(BuffTimer(*duration))
+                            .insert(TargetEntity { entity: ent })
+                            .insert(*buff)
+                            .id();
+
+                        buff_holder.set.insert(buff);
                     }
                 }
 
@@ -588,6 +635,22 @@ pub fn percent_damage_over_time(
     }
 }
 
+pub fn heal_over_time(
+    buff_query: Query<(&HealingPerSecond, &TargetEntity)>,
+    mut target_query: Query<&mut ResolveEffectsBuffer>,
+    delta: Res<crate::physics::DeltaPhysics>,
+) {
+    for (healing, ent_target) in buff_query.iter() {
+        if let Ok(mut target) = target_query.get_mut(ent_target.entity) {
+            target.vec.push(Effect::DamageEffect(DamageInstance {
+                damage: -healing.0 * delta.seconds,
+                delay: 0.0,
+                damage_type: super::DamageType::Heal,
+            }))
+        }
+    }
+}
+
 pub fn percent_cooldown_speedup(
     buff_query: Query<(&PercentCooldownReduction, &TargetEntity)>,
     mut cooldown_query: Query<&mut Cooldown>,
@@ -610,7 +673,6 @@ pub fn apply_stun_buff(
         if let Ok(_) = target_query.get_mut(ent_target.entity) {
             commands
                 .entity(ent_target.entity)
-                // TODO: Make proper action entity instead of passing ent
                 .insert(super::actions::PerformingActionState { action: ent });
         }
     }

@@ -2,7 +2,7 @@ use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
 use crate::{
-    graphics::{FlippableSprite, animation::AnimatedSprite},
+    graphics::{animation::AnimatedSprite, FlippableSprite},
     physics::{spatial_structures::SpatialHashTable, DeltaPhysics, Position, Radius, Velocity},
     util::true_distance,
 };
@@ -124,6 +124,7 @@ pub struct TargetFlags {
     pub target_enemies: bool,
     pub target_allies: bool,
     pub target_furthest: bool,
+    pub target_lowest_pct_health: bool,
 }
 
 impl TargetFlags {
@@ -135,6 +136,7 @@ impl TargetFlags {
             target_enemies: true,
             target_allies: false,
             target_furthest: false,
+            target_lowest_pct_health: false,
         }
     }
 
@@ -146,6 +148,7 @@ impl TargetFlags {
             target_enemies: true,
             target_allies: false,
             target_furthest: true,
+            target_lowest_pct_health: false,
         }
     }
 
@@ -157,6 +160,7 @@ impl TargetFlags {
             target_enemies: false,
             target_allies: true,
             target_furthest: false,
+            target_lowest_pct_health: false,
         }
     }
 
@@ -168,6 +172,7 @@ impl TargetFlags {
             target_enemies: false,
             target_allies: true,
             target_furthest: false,
+            target_lowest_pct_health: true,
         }
     }
 
@@ -179,6 +184,7 @@ impl TargetFlags {
             target_enemies: false,
             target_allies: true,
             target_furthest: false,
+            target_lowest_pct_health: false,
         }
     }
 }
@@ -280,13 +286,14 @@ pub fn performing_action_state(
                         }
                         // Event Cue
                         if let Ok(texture) = texture_query.get(ent) {
-                            events.0.push(crate::event::EventCue {
-                                event: "impact".to_string(),
-                                location: position.pos,
-                                texture: texture.texture 
-                            });
+                            events
+                                .0
+                                .push(crate::EventCue::Audio(crate::event::AudioCue {
+                                    event: "impact".to_string(),
+                                    location: position.pos,
+                                    texture: texture.texture,
+                                }));
                         }
-                        
 
                         // Handle cleave
                         if let Some(cleave) = cleave_option {
@@ -375,11 +382,13 @@ pub fn performing_action_state(
                     ImpactType::Projectile => {
                         if let Some(details) = projectile_option {
                             // Event Cue
-                            events.0.push(crate::event::EventCue {
-                                event: "birth".to_string(),
-                                location: position.pos,
-                                texture: details.projectile_texture 
-                            });
+                            events
+                                .0
+                                .push(crate::EventCue::Audio(crate::event::AudioCue {
+                                    event: "birth".to_string(),
+                                    location: position.pos,
+                                    texture: details.projectile_texture,
+                                }));
 
                             if let Ok((target_position, _)) = pos_query.get(target.entity) {
                                 let mut splash_radius = 0.0;
@@ -465,6 +474,7 @@ pub fn target_units(
             {
                 if let Ok((pos, rad)) = pos_query.get(ent) {
                     let mut min_dist = f32::MAX;
+                    let mut min_health_pct = 1.1;
                     if target_flags.target_furthest {
                         min_dist = 0.0;
                     }
@@ -500,7 +510,15 @@ pub fn target_units(
                             }
 
                             // Get nearest target
-                            if let Ok((target_pos, target_rad)) = pos_query.get(*neighbor) {
+                            if target_flags.target_lowest_pct_health {
+                                if let Ok(hp) = health_query.get(*neighbor) {
+                                    let health_pct = hp.hp / hp.max_hp;
+                                    if health_pct < min_health_pct {
+                                        min_health_pct = health_pct;
+                                        cur_target = *neighbor;
+                                    }
+                                }
+                            } else if let Ok((target_pos, target_rad)) = pos_query.get(*neighbor) {
                                 let dist = crate::util::true_distance(
                                     pos.pos,
                                     target_pos.pos,

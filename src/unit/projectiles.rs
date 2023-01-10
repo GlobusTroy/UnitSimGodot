@@ -102,12 +102,13 @@ pub fn projectile_contact(
     for (ent, position, projectile, details, splash_option) in query.iter_mut() {
         if position.pos.distance_to(projectile.target_pos) <= details.contact_distance {
             // Event Cue
-            events.0.push(crate::event::EventCue {
-                event: "impact".to_string(),
-                location: position.pos,
-                texture: details.projectile_texture
-            });
-
+            events
+                .0
+                .push(crate::EventCue::Audio(crate::event::AudioCue {
+                    event: "impact".to_string(),
+                    location: position.pos,
+                    texture: details.projectile_texture,
+                }));
 
             //Apply effects
             if let Ok(mut buffer) = apply_query.get_mut(projectile.target) {

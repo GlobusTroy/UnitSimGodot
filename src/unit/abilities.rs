@@ -17,6 +17,8 @@ pub enum UnitAbility {
     DamageBuff(DamageBuffAbility),
     AntiHeal(AntihealOnHitEffect),
     ArmorReduction(ArmorReductionAttack),
+    Fortify(FortifyAbility),
+    BuffResistance(BuffResistanceAbility),
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -66,6 +68,30 @@ pub struct WhirlwindAbility {
 #[derive(Debug, Component, Clone, Copy)]
 pub struct OverdriveAbility {
     pub percent_cooldown_speedup: f32,
+    pub range: f32,
+    pub cooldown: f32,
+    pub swing_time: f32,
+    pub impact_time: f32,
+    pub duration: f32,
+    pub effect_texture: Rid,
+}
+
+#[derive(Debug, Component, Clone, Copy)]
+pub struct FortifyAbility {
+    pub heal_immediate: f32,
+    pub heal_over_time: f32,
+    pub armor_amount: f32,
+    pub range: f32,
+    pub cooldown: f32,
+    pub swing_time: f32,
+    pub impact_time: f32,
+    pub duration: f32,
+    pub effect_texture: Rid,
+}
+
+#[derive(Debug, Component, Clone, Copy)]
+pub struct BuffResistanceAbility {
+    pub magic_armor_amount: f32,
     pub range: f32,
     pub cooldown: f32,
     pub swing_time: f32,

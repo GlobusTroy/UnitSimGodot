@@ -55,7 +55,8 @@ pub fn copy_target_position(
 ) {
     for (mut vel, pos, target) in query.iter_mut() {
         if let Ok(pos_target) = pos_query.get(target.entity) {
-            vel.v = (pos_target.pos - pos.pos) * (1. / delta.seconds);
+            let target = Vector2::new(pos_target.pos.x, pos_target.pos.y - 0.01);
+            vel.v = (target - pos.pos) * (1. / delta.seconds);
         }
     }
 }

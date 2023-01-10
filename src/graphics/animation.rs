@@ -5,7 +5,7 @@ use gdnative::{api::VisualServer, prelude::*};
 
 use crate::{
     physics::{Radius, Velocity},
-    unit::{Hitpoints, TeamAlignment, TeamValue, BlueprintId},
+    unit::{BlueprintId, Hitpoints, TeamAlignment, TeamValue},
 };
 
 use super::{Delta, Renderable, ScaleSprite};
@@ -144,13 +144,15 @@ pub fn execute_play_animation_directive(
         }
 
         if let Ok(pos) = event_query.get(entity) {
-            events.0.push(crate::event::EventCue {
-                event: directive.animation_name.clone(),
-                location: pos.pos,
-                texture: sprite.texture
-            });
+            events
+                .0
+                .push(crate::EventCue::Audio(crate::event::AudioCue {
+                    event: directive.animation_name.clone(),
+                    location: pos.pos,
+                    texture: sprite.texture,
+                }));
         }
-       commands.entity(entity).remove::<PlayAnimationDirective>();
+        commands.entity(entity).remove::<PlayAnimationDirective>();
     }
 }
 
@@ -254,17 +256,17 @@ pub fn animate_sprites(
                             }
                             _ => {}
                         };
-                        server.canvas_item_add_circle(
-                            renderable.canvas_item_rid,
-                            Vector2::ZERO,
-                            (1.25 * radius.r) as f64,
-                            Color {
-                                r: red,
-                                g: green as i32 as f32,
-                                b: blue as i32 as f32,
-                                a: 0.1,
-                            },
-                        );
+                        // server.canvas_item_add_circle(
+                        //     renderable.canvas_item_rid,
+                        //     Vector2::ZERO,
+                        //     (1.25 * radius.r) as f64,
+                        //     Color {
+                        //         r: red,
+                        //         g: green as i32 as f32,
+                        //         b: blue as i32 as f32,
+                        //         a: 0.1,
+                        //     },
+                        // );
                         server.canvas_item_add_circle(
                             renderable.canvas_item_rid,
                             Vector2::ZERO,
@@ -276,6 +278,21 @@ pub fn animate_sprites(
                                 a: 0.3 + 0.2 * (hitpoints.hp / hitpoints.max_hp),
                             },
                         );
+
+                        let hp_size =  16. * (hitpoints.hp / hitpoints.max_hp);
+                        server.canvas_item_add_rect(
+                            renderable.canvas_item_rid,
+                            Rect2 {
+                                position: Vector2{x: -hp_size / 2.0, y: 0.},
+                                size: Vector2{x: hp_size, y: 4.},
+                            },
+                            Color {
+                                r: red,
+                                g: green,
+                                b: blue,
+                                a: 0.75,
+                            },
+                        )
                     }
                 }
             }
