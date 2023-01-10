@@ -1,3 +1,5 @@
+use core::fmt;
+
 use bevy_ecs::prelude::*;
 use gdnative::prelude::*;
 
@@ -9,6 +11,7 @@ use actions::*;
 
 use crate::{
     boid::BoidParams,
+    event::{DamageCue, EventQueue},
     graphics::{
         animation::{AnimatedSprite, PlayAnimationDirective},
         CleanupCanvasItem, FlippableSprite, NewCanvasItemDirective, Renderable, ScaleSprite,
@@ -141,6 +144,17 @@ pub enum DamageType {
     Poison,
     Magic,
     Heal,
+}
+
+impl fmt::Display for DamageType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DamageType::Normal => write!(f, "normal"),
+            DamageType::Poison => write!(f, "poison"),
+            DamageType::Magic => write!(f, "magic"),
+            DamageType::Heal => write!(f, "heal"),
+        }
+    }
 }
 
 #[derive(Debug, Component, Clone, Copy)]
@@ -288,7 +302,9 @@ pub fn apply_damages(
         Option<&MagicArmor>,
         Option<&HealEfficacy>,
     )>,
+    pos_query: Query<&Position>,
     delta: Res<DeltaPhysics>,
+    mut event_queue: ResMut<EventQueue>,
 ) {
     for (
         entity,
@@ -317,6 +333,17 @@ pub fn apply_damages(
                         damage.damage *= heal_efficacy.0;
                     }
                 }
+
+                // Event cue hook
+                if let Ok(pos) = pos_query.get(entity) {
+                    let cue = crate::event::EventCue::Damage(DamageCue {
+                        damage: damage.damage,
+                        damage_type: damage.damage_type.to_string(),
+                        location: pos.pos,
+                    });
+                    event_queue.0.push(cue);
+                }
+
                 hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp - damage.damage);
                 damages.damages.remove(i);
             } else {

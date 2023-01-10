@@ -1,5 +1,4 @@
 use bevy_ecs::prelude::*;
-use bevy_ecs::schedule::ReportExecutionOrderAmbiguities;
 use boid::conductors::kite_conductor;
 use gdnative::{api::VisualServer, prelude::*};
 
@@ -60,42 +59,49 @@ impl ECSWorld {
         let mut schedule_physics = Schedule::default();
         schedule_physics.add_stage(
             "dispose1",
-            SystemStage::single_threaded()
+            SystemStage::parallel()
                 .with_system(util::expire_entities)
-                .with_system(unit::resolve_death),
+                .with_system(unit::resolve_death)
+                .with_system(effects::percent_cooldown_speedup),
         );
         schedule_physics.add_stage(
             "dispose2",
-            SystemStage::single_threaded()
+            SystemStage::parallel()
                 .with_system(effects::buff_timer)
-                .with_system(effects::percent_cooldown_speedup)
                 .with_system(actions::action_cooldown),
         );
         schedule_physics.add_stage(
+            "integrate",
+            SystemStage::parallel().with_system(physics::physics_integrate),
+        );
+        schedule_physics.add_stage(
             "effects",
-            SystemStage::single_threaded()
-                .with_system(physics::physics_integrate)
-                .with_system(effects::resolve_effects)
-                .with_system(effects::apply_teleport),
+            SystemStage::parallel().with_system(effects::resolve_effects),
+        );
+        schedule_physics.add_stage(
+            "effects2",
+            SystemStage::parallel().with_system(effects::apply_teleport),
         );
         schedule_physics.add_stage(
             "apply",
-            SystemStage::single_threaded()
-                .with_system(apply_damages)
+            SystemStage::parallel()
                 .with_system(effects::apply_stat_buffs)
                 .with_system(effects::percent_damage_over_time)
+                .with_system(effects::heal_over_time)
                 .with_system(effects::apply_stun_buff)
-                .with_system(util::copy_target_position)
                 // BUILD SPATIAL HASH
                 .with_system(build_spatial_hash_table),
         );
         schedule_physics.add_stage(
             "override",
-            SystemStage::single_threaded().with_system(effects::set_stats_directly),
+            SystemStage::parallel()
+                .with_system(effects::set_stats_directly)
+                .with_system(util::copy_target_position)
+                .with_system(apply_damages),
         );
         schedule_physics.add_stage(
             "detect_collisions",
-            SystemStage::single_threaded()
+            SystemStage::parallel()
                 .with_system(detect_collisions)
                 .with_system(build_spatial_neighbors_cache)
                 .with_system(build_flow_fields),
@@ -120,10 +126,13 @@ impl ECSWorld {
 
         let mut schedule_behavior = Schedule::default();
         schedule_behavior.add_stage(
+            "behavior1",
+            SystemStage::parallel().with_system(projectiles::projectile_homing),
+        );
+        schedule_behavior.add_stage(
             "target",
             SystemStage::parallel()
                 .with_system(actions::target_units)
-                .with_system(projectiles::projectile_homing)
                 .with_system(projectiles::projectile_contact)
                 .with_system(boid::update_boid_params_to_stats)
                 .with_system(kite_conductor),
@@ -192,6 +201,7 @@ impl ECSWorld {
 
     fn setup_event_cue_signal(&mut self, base: &Node2D) {
         base.add_user_signal("event_cue", VariantArray::default());
+        base.add_user_signal("damage_cue", VariantArray::default());
     }
 
     #[method]
@@ -486,6 +496,62 @@ impl ECSWorld {
         };
         if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
             blueprint.add_ability(UnitAbility::Overdrive(ability));
+        }
+    }
+
+    #[method]
+    fn add_buff_resistance_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        magic_armor_amount: f32,
+        range: f32,
+        duration: f32,
+        cooldown: f32,
+        impact_time: f32,
+        swing_time: f32,
+        effect_texture: Rid,
+    ) {
+        let ability = abilities::BuffResistanceAbility {
+            magic_armor_amount: magic_armor_amount,
+            range: range,
+            cooldown: cooldown,
+            duration: duration,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            effect_texture: effect_texture,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::BuffResistance(ability));
+        }
+    }
+
+    #[method]
+    fn add_fortify_ability_to_blueprint(
+        &mut self,
+        blueprint_id: usize,
+        heal_immediate: f32,
+        heal_over_time: f32,
+        armor_amount: f32,
+        range: f32,
+        duration: f32,
+        cooldown: f32,
+        impact_time: f32,
+        swing_time: f32,
+        effect_texture: Rid,
+    ) {
+        let ability = abilities::FortifyAbility {
+            heal_immediate: heal_immediate,
+            heal_over_time: heal_over_time,
+            armor_amount: armor_amount,
+            range: range,
+            cooldown: cooldown,
+            duration: duration,
+            impact_time: impact_time,
+            swing_time: swing_time,
+            effect_texture: effect_texture,
+        };
+        if let Some(blueprint) = self.unit_blueprints.get_mut(blueprint_id) {
+            blueprint.add_ability(UnitAbility::Fortify(ability));
         }
     }
 
@@ -872,6 +938,85 @@ impl ECSWorld {
                     })
                     .id();
                 unit_actions.vec.push(heal_spell);
+            } else if let UnitAbility::BuffResistance(heal) = spell {
+                let buff = effects::StatBuff {
+                    armor_buff: 0.,
+                    heal_efficacy_mult_buff: 0.,
+                    acceleration_buff: 0.,
+                    speed_buff: 0.,
+                    magic_armor_buff: heal.magic_armor_amount,
+                };
+                let heal_spell = self
+                    .world
+                    .spawn()
+                    .insert_bundle(actions::ActionBundle::new(
+                        actions::SwingDetails {
+                            impact_time: heal.impact_time,
+                            complete_time: heal.swing_time,
+                            cooldown_time: heal.cooldown,
+                        },
+                        heal.range,
+                        actions::ImpactType::Instant,
+                        actions::TargetFlags::normal_buff(),
+                        "cast".to_string(),
+                    ))
+                    .insert(actions::EffectTexture(heal.effect_texture))
+                    .insert(actions::OnHitEffects {
+                        vec: vec![
+                            effects::Effect::ApplyStatBuffEffect(buff, heal.duration),
+                            effects::Effect::Visual(effects::SpawnVisualEffect {
+                                texture: heal.effect_texture,
+                                duration: heal.duration,
+                            }),
+                        ],
+                    })
+                    .id();
+                unit_actions.vec.push(heal_spell);
+            } else if let UnitAbility::Fortify(heal) = spell {
+                let buff = effects::StatBuff {
+                    armor_buff: heal.armor_amount,
+                    heal_efficacy_mult_buff: 0.,
+                    acceleration_buff: 0.,
+                    speed_buff: 0.,
+                    magic_armor_buff: 0.,
+                };
+                let heal_spell = self
+                    .world
+                    .spawn()
+                    .insert_bundle(actions::ActionBundle::new(
+                        actions::SwingDetails {
+                            impact_time: heal.impact_time,
+                            complete_time: heal.swing_time,
+                            cooldown_time: heal.cooldown,
+                        },
+                        heal.range,
+                        actions::ImpactType::Projectile,
+                        actions::TargetFlags::heal(),
+                        "cast".to_string(),
+                    ))
+                    .insert(actions::EffectTexture(heal.effect_texture))
+                    .insert(actions::OnHitEffects {
+                        vec: vec![
+                            effects::Effect::HealEffect(heal.heal_immediate),
+                            effects::Effect::HealOverTimeEffect {
+                                amount_per_second: heal.heal_over_time / heal.duration,
+                                duration: heal.duration,
+                            },
+                            effects::Effect::ApplyStatBuffEffect(buff, heal.duration),
+                            effects::Effect::Visual(effects::SpawnVisualEffect {
+                                texture: heal.effect_texture,
+                                duration: heal.duration,
+                            }),
+                        ],
+                    })
+                    .insert(projectiles::ActionProjectileDetails {
+                        projectile_speed: 300.,
+                        projectile_scale: 0.6,
+                        projectile_texture: heal.effect_texture,
+                        contact_distance: 12.0,
+                    })
+                    .id();
+                unit_actions.vec.push(heal_spell);
             } else if let UnitAbility::MagicMissile(missile) = spell {
                 let missile_attack = self
                     .world
@@ -1099,11 +1244,22 @@ impl ECSWorld {
     fn _process_event_signal_queue(&mut self, base: &Node2D) {
         if let Some(queue) = self.world.get_resource::<EventQueue>() {
             for event in queue.0.iter() {
-                let variant_arr = VariantArray::new();
-                variant_arr.push(event.texture);
-                variant_arr.push(event.event.clone());
-                variant_arr.push(event.location);
-                base.emit_signal("event_cue", &[variant_arr.into_shared().to_variant()]);
+                match event {
+                    EventCue::Audio(cue) => {
+                        let variant_arr = VariantArray::new();
+                        variant_arr.push(cue.texture);
+                        variant_arr.push(cue.event.clone());
+                        variant_arr.push(cue.location);
+                        base.emit_signal("event_cue", &[variant_arr.into_shared().to_variant()]);
+                    }
+                    EventCue::Damage(cue) => {
+                        let variant_arr = VariantArray::new();
+                        variant_arr.push(cue.damage);
+                        variant_arr.push(cue.damage_type.clone());
+                        variant_arr.push(cue.location);
+                        base.emit_signal("damage_cue", &[variant_arr.into_shared().to_variant()]);
+                    }
+                }
             }
         }
         self.world.insert_resource(EventQueue(Vec::new()));
