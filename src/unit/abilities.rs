@@ -10,6 +10,7 @@ pub enum UnitAbility {
     Stun(super::StunOnHitEffect),
     Heal(HealAbility),
     MagicMissile(MagicMissileAbility),
+    BubbleBomb(BubbleBombAbility),
     Whirlwind(WhirlwindAbility),
     Overdrive(OverdriveAbility),
     Confusion(ConfusionAttack),
@@ -19,6 +20,8 @@ pub enum UnitAbility {
     ArmorReduction(ArmorReductionAttack),
     Fortify(FortifyAbility),
     BuffResistance(BuffResistanceAbility),
+    BanelingAttack { damage: f32, radius: f32 },
+    ExecutionAttack { heal_amount: f32 },
 }
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -51,6 +54,20 @@ pub struct MagicMissileAbility {
     pub cooldown: f32,
     pub swing_time: f32,
     pub impact_time: f32,
+    pub effect_texture: Rid,
+
+    pub time_until_cooled: f32,
+}
+
+#[derive(Debug, Component, Clone, Copy)]
+pub struct BubbleBombAbility {
+    pub damage: f32,
+    pub range: f32,
+    pub cooldown: f32,
+    pub swing_time: f32,
+    pub impact_time: f32,
+    pub radius: f32,
+    pub stun_duration: f32,
     pub effect_texture: Rid,
 
     pub time_until_cooled: f32,

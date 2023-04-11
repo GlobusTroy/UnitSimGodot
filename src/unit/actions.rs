@@ -202,6 +202,11 @@ pub struct OnHitEffects {
     pub vec: Vec<Effect>,
 }
 
+#[derive(Component, Clone)]
+pub struct OnDeathEffects {
+    pub vec: Vec<super::effects::DeathEffect>,
+}
+
 #[derive(Component)]
 pub struct PerformingActionState {
     pub action: Entity,

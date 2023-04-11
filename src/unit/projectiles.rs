@@ -23,6 +23,11 @@ pub struct Splash {
     pub radius: f32,
 }
 
+#[derive(Component)]
+pub struct DamageOverride {
+    pub damage: f32,
+}
+
 pub fn spawn_projectile(
     commands: &mut Commands,
     origin_action: Entity,
@@ -92,6 +97,7 @@ pub fn projectile_contact(
         &Projectile,
         &ActionProjectileDetails,
         Option<&Splash>,
+        Option<&DamageOverride>,
     )>,
     mut apply_query: Query<&mut crate::effects::ResolveEffectsBuffer>,
     splash_query: Query<(&Position, &Radius)>,
@@ -99,7 +105,9 @@ pub fn projectile_contact(
     spatial: Res<crate::physics::spatial_structures::SpatialHashTable>,
     mut events: ResMut<crate::event::EventQueue>,
 ) {
-    for (ent, position, projectile, details, splash_option) in query.iter_mut() {
+    for (ent, position, projectile, details, splash_option, damage_override_option) in
+        query.iter_mut()
+    {
         if position.pos.distance_to(projectile.target_pos) <= details.contact_distance {
             // Event Cue
             events
@@ -163,12 +171,26 @@ pub fn projectile_contact(
                                                                 delay: dmg.delay,
                                                                 damage_type:
                                                                     super::DamageType::Magic,
+                                                                originator: dmg.originator,
                                                             },
                                                         ),
                                                     );
                                                 } else {
                                                     buffer.vec.push(*effect);
                                                 }
+                                            }
+                                        } else {
+                                            if let Some(damage_override) = damage_override_option {
+                                                buffer.vec.push(
+                                                    super::effects::Effect::DamageEffect(
+                                                        super::DamageInstance {
+                                                            damage: damage_override.damage,
+                                                            delay: 0.0,
+                                                            damage_type: super::DamageType::Magic,
+                                                            originator: projectile.origin_action,
+                                                        },
+                                                    ),
+                                                );
                                             }
                                         }
                                     }

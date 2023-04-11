@@ -171,6 +171,7 @@ pub fn animate_sprites(
     )>,
     delta: Res<Delta>,
     library: Res<AnimationLibrary>,
+    health_bars_option: Option<Res<crate::ShowHealthBars>>,
 ) {
     for (
         entity,
@@ -251,48 +252,55 @@ pub fn animate_sprites(
                             }
                             TeamValue::NeutralHostile => {
                                 green = 1.0;
-                                blue = 0.75;
-                                red = 0.75;
                             }
                             _ => {}
                         };
-                        // server.canvas_item_add_circle(
-                        //     renderable.canvas_item_rid,
-                        //     Vector2::ZERO,
-                        //     (1.25 * radius.r) as f64,
-                        //     Color {
-                        //         r: red,
-                        //         g: green as i32 as f32,
-                        //         b: blue as i32 as f32,
-                        //         a: 0.1,
-                        //     },
-                        // );
                         server.canvas_item_add_circle(
                             renderable.canvas_item_rid,
                             Vector2::ZERO,
-                            (radius.r * (0.15 + 0.85 * (hitpoints.hp / hitpoints.max_hp))) as f64,
+                            (1.25 * radius.r) as f64,
                             Color {
                                 r: red,
                                 g: green as i32 as f32,
                                 b: blue as i32 as f32,
-                                a: 0.3 + 0.2 * (hitpoints.hp / hitpoints.max_hp),
+                                a: 0.1,
                             },
                         );
 
-                        let hp_size =  16. * (hitpoints.hp / hitpoints.max_hp);
-                        server.canvas_item_add_rect(
-                            renderable.canvas_item_rid,
-                            Rect2 {
-                                position: Vector2{x: -hp_size / 2.0, y: 0.},
-                                size: Vector2{x: hp_size, y: 4.},
-                            },
-                            Color {
-                                r: red,
-                                g: green,
-                                b: blue,
-                                a: 0.75,
-                            },
-                        )
+                        if let Some(ref health_bars) = health_bars_option {
+                            if health_bars.0 {
+                                let hp_size = 16. * (hitpoints.hp / hitpoints.max_hp);
+                                server.canvas_item_add_rect(
+                                    renderable.canvas_item_rid,
+                                    Rect2 {
+                                        position: Vector2 {
+                                            x: -hp_size / 2.0,
+                                            y: 4.,
+                                        },
+                                        size: Vector2 { x: hp_size, y: 4. },
+                                    },
+                                    Color {
+                                        r: red,
+                                        g: green,
+                                        b: blue,
+                                        a: 0.75,
+                                    },
+                                )
+                            } else {
+                                server.canvas_item_add_circle(
+                                    renderable.canvas_item_rid,
+                                    Vector2::ZERO,
+                                    (radius.r * (0.15 + 0.85 * (hitpoints.hp / hitpoints.max_hp)))
+                                        as f64,
+                                    Color {
+                                        r: red,
+                                        g: green as i32 as f32,
+                                        b: blue as i32 as f32,
+                                        a: 0.3 + 0.2 * (hitpoints.hp / hitpoints.max_hp),
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
             }

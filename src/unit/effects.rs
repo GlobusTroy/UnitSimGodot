@@ -8,7 +8,7 @@ use crate::{
 
 use super::{
     abilities::{DamageBuffAbility, FortifyAbility, OverdriveAbility},
-    actions::{Cooldown, OnHitEffects, TargetEntity, UnitActions},
+    actions::{Cooldown, OnHitEffects, TargetEntity, UnitActions, OnDeathEffects},
     Acceleration, AntihealOnHitEffect, AppliedDamage, DamageInstance, DeathApproaches, MagicArmor,
     StunOnHitEffect,
 };
@@ -16,23 +16,41 @@ use super::{
 #[derive(Copy, Clone)]
 pub enum Effect {
     DamageEffect(DamageInstance),
-    PoisonEffect(super::abilities::SlowPoisonAttack),
+    PoisonEffect {
+        poison: super::abilities::SlowPoisonAttack,
+        originator: Entity,
+    },
     ArmorReductionEffect(super::abilities::ArmorReductionAttack),
     StunEffect(StunOnHitEffect),
     CleanseEffect,
-    HealEffect(f32),
+    HealEffect {
+        amount: f32,
+        originator: Entity,
+    },
     HealOverTimeEffect {
         amount_per_second: f32,
         duration: f32,
+        originator: Entity,
+    },
+    SuicideEffect {
+        originator: Entity,
     },
     ApplyStatBuffEffect(StatBuff, f32),
     OverdriveEffect(OverdriveAbility),
     DamageBuffEffect(DamageBuffAbility),
     ConfusionEffect(super::abilities::ConfusionAttack),
     TeleportBehindTargetEffect(Entity),
+    HealOnDeathEffect{amount: f32, target: Entity},
     AntiHeal(AntihealOnHitEffect),
     Visual(SpawnVisualEffect),
 }
+
+#[derive(Copy, Clone)]
+pub enum DeathEffect {
+    MagicSplashDamage { damage: f32, radius: f32 },
+    HealTarget { amount: f32, target: Entity },
+}
+
 #[derive(Component)]
 pub struct BuffTimer(pub f32);
 
@@ -45,6 +63,7 @@ pub struct BuffType {
 pub struct PercentDamageOverTime {
     pub damage_percent: f32,
     pub damage_type: super::DamageType,
+    pub originator: Entity,
 }
 
 #[derive(Component)]
@@ -61,7 +80,10 @@ pub struct BuffHolder {
 }
 
 #[derive(Component, Clone, Debug)]
-pub struct HealingPerSecond(pub f32);
+pub struct HealingPerSecond {
+    pub amount: f32,
+    pub originator: Entity,
+}
 
 #[derive(Component, Clone, Debug)]
 pub struct FlatDamageBuff(pub f32);
@@ -96,6 +118,7 @@ pub struct StatBuff {
 pub fn resolve_effects(
     mut commands: Commands,
     mut query: Query<(Entity, &mut super::effects::ResolveEffectsBuffer)>,
+    mut on_death: Query<&mut OnDeathEffects>,
     mut damage_query: Query<&mut crate::unit::AppliedDamage>,
     mut buff_holder_query: Query<&mut BuffHolder>,
     mut actions_query: Query<&mut UnitActions>,
@@ -108,8 +131,8 @@ pub fn resolve_effects(
         for effect in buffer.vec.iter() {
             match effect {
                 // POISON
-                Effect::PoisonEffect(poison) => {
-                    let poison_buff = spawn_poison_buff(&mut commands, poison, ent);
+                Effect::PoisonEffect { poison, originator } => {
+                    let poison_buff = spawn_poison_buff(&mut commands, poison, ent, *originator);
                     if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
                         buff_holder.set.insert(poison_buff);
                     }
@@ -123,6 +146,23 @@ pub fn resolve_effects(
                     }
                 }
 
+                // Heal On Death 
+                Effect::HealOnDeathEffect{amount, target} => {
+                   if let Ok(mut on_death) = on_death.get_mut(ent) {
+                        let heal = DeathEffect::HealTarget { amount: *amount, target: *target };
+                        on_death.vec.push(heal);
+                   }
+                }
+
+                // SUICIDE / BANELING
+                Effect::SuicideEffect { originator } => {
+                    commands.entity(*originator).insert(DeathApproaches {
+                        spawn_corpse: true,
+                        cleanup_corpse_canvas: true,
+                        cleanup_time: 3.0,
+                    });
+                }
+
                 // DAMAGE
                 Effect::DamageEffect(damage_instance) => {
                     if let Ok(mut damages) = damage_query.get_mut(ent) {
@@ -131,12 +171,13 @@ pub fn resolve_effects(
                 }
 
                 // HEAL
-                Effect::HealEffect(heal_amount) => {
+                Effect::HealEffect { amount, originator } => {
                     if let Ok(mut damages) = damage_query.get_mut(ent) {
                         damages.damages.push(DamageInstance {
-                            damage: -heal_amount,
+                            damage: -amount,
                             delay: 0.0,
                             damage_type: super::DamageType::Heal,
+                            originator: *originator,
                         });
                     }
                 }
@@ -145,6 +186,7 @@ pub fn resolve_effects(
                 Effect::HealOverTimeEffect {
                     amount_per_second,
                     duration,
+                    originator,
                 } => {
                     if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
                         if let Ok(actions) = actions_query.get(ent) {
@@ -155,7 +197,10 @@ pub fn resolve_effects(
                                         .insert(BuffType { is_debuff: false })
                                         .insert(BuffTimer(*duration))
                                         .insert(TargetEntity { entity: ent })
-                                        .insert(HealingPerSecond(*amount_per_second))
+                                        .insert(HealingPerSecond {
+                                            amount: *amount_per_second,
+                                            originator: *originator,
+                                        })
                                         .id();
 
                                     buff_holder.set.insert(buff);
@@ -500,6 +545,7 @@ fn spawn_poison_buff(
     commands: &mut Commands,
     poison: &super::abilities::SlowPoisonAttack,
     target_ent: Entity,
+    originator_ent: Entity,
 ) -> Entity {
     let poison_buff = commands
         .spawn()
@@ -507,6 +553,7 @@ fn spawn_poison_buff(
         .insert(PercentDamageOverTime {
             damage_percent: poison.percent_damage,
             damage_type: super::DamageType::Poison,
+            originator: originator_ent,
         })
         .insert(StatBuff {
             armor_buff: 0.0,
@@ -630,6 +677,7 @@ pub fn percent_damage_over_time(
                 damage: hp.max_hp * damage.damage_percent * delta.seconds,
                 delay: 0.0,
                 damage_type: damage.damage_type,
+                originator: damage.originator,
             }))
         }
     }
@@ -643,9 +691,10 @@ pub fn heal_over_time(
     for (healing, ent_target) in buff_query.iter() {
         if let Ok(mut target) = target_query.get_mut(ent_target.entity) {
             target.vec.push(Effect::DamageEffect(DamageInstance {
-                damage: -healing.0 * delta.seconds,
+                damage: -healing.amount * delta.seconds,
                 delay: 0.0,
                 damage_type: super::DamageType::Heal,
+                originator: healing.originator,
             }))
         }
     }

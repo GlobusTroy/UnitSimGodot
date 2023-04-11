@@ -23,7 +23,10 @@ use crate::{
     util::{normalized_or_zero, true_distance, ExpirationTimer},
 };
 
-use self::abilities::*;
+use self::{
+    abilities::*,
+    projectiles::{ActionProjectileDetails, DamageOverride},
+};
 
 #[derive(Component, Debug, Clone, Copy)]
 pub struct BlueprintId(pub usize);
@@ -127,7 +130,7 @@ pub struct AntihealOnHitEffect {
 #[derive(Component, Copy, Clone, Debug)]
 pub struct HealEfficacy(pub f32);
 
-#[derive(Component)]
+#[derive(Component, Copy, Clone)]
 pub struct TeamAlignment {
     pub alignment: TeamValue,
 }
@@ -162,6 +165,7 @@ pub struct DamageInstance {
     pub damage: f32,
     pub delay: f32,
     pub damage_type: DamageType,
+    pub originator: Entity,
 }
 
 #[derive(Component)]
@@ -302,6 +306,7 @@ pub fn apply_damages(
         Option<&MagicArmor>,
         Option<&HealEfficacy>,
     )>,
+    data_query: Query<(&TeamAlignment, &BlueprintId)>,
     pos_query: Query<&Position>,
     delta: Res<DeltaPhysics>,
     mut event_queue: ResMut<EventQueue>,
@@ -334,14 +339,37 @@ pub fn apply_damages(
                     }
                 }
 
+                if (hitpoints.hp - damage.damage) > hitpoints.max_hp {
+                    damage.damage = hitpoints.hp - hitpoints.max_hp;
+                }
+                if (hitpoints.hp - damage.damage) < 0.0 {
+                    damage.damage = hitpoints.hp;
+                }
+
                 // Event cue hook
                 if let Ok(pos) = pos_query.get(entity) {
-                    let cue = crate::event::EventCue::Damage(DamageCue {
-                        damage: damage.damage,
-                        damage_type: damage.damage_type.to_string(),
-                        location: pos.pos,
-                    });
-                    event_queue.0.push(cue);
+                    if let Ok((alignment_target, id_target)) = data_query.get(entity) {
+                        if let Ok((alignment_originator, id_originator)) =
+                            data_query.get(damage.originator)
+                        {
+                            let cue = crate::event::EventCue::Damage(DamageCue {
+                                damage: damage.damage,
+                                damage_type: damage.damage_type.to_string(),
+                                location: pos.pos,
+                                attacker: crate::event::EventEntityData {
+                                    ent: damage.originator,
+                                    blueprint: *id_originator,
+                                    team: *alignment_originator,
+                                },
+                                receiver: crate::event::EventEntityData {
+                                    ent: entity,
+                                    blueprint: *id_target,
+                                    team: *alignment_target,
+                                },
+                            });
+                            event_queue.0.push(cue);
+                        }
+                    }
                 }
 
                 hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp - damage.damage);
@@ -372,12 +400,52 @@ pub fn resolve_death(
         Option<&crate::graphics::Renderable>,
         Option<&crate::graphics::animation::AnimatedSprite>,
         Option<&crate::graphics::ScaleSprite>,
+        Option<&OnDeathEffects>,
     )>,
+    mut damage_query: Query<&mut AppliedDamage>,
 ) {
-    for (ent, death, position_option, render_option, animated_sprite_option, scale_option) in
-        query.iter()
+    for (
+        ent,
+        death,
+        position_option,
+        render_option,
+        animated_sprite_option,
+        scale_option,
+        death_fx_option,
+    ) in query.iter()
     {
         if let Some(position) = position_option {
+            if let Some(death_fx) = death_fx_option {
+                for effect in death_fx.vec.iter() {
+                    match effect {
+                        effects::DeathEffect::MagicSplashDamage { damage, radius } => {
+                            commands
+                                .spawn()
+                                .insert(projectiles::Projectile {
+                                    target: ent,
+                                    target_pos: position.pos,
+                                    origin_action: ent,
+                                })
+                                .insert(ActionProjectileDetails {
+                                    projectile_speed: 0.0,
+                                    projectile_scale: 1.0,
+                                    projectile_texture: Rid::new(),
+                                    contact_distance: 1.0,
+                                })
+                                .insert(projectiles::DamageOverride { damage: *damage })
+                                .insert(Position { pos: position.pos })
+                                .insert(Velocity { v: Vector2::ZERO })
+                                .insert(projectiles::Splash { radius: *radius });
+                        }
+                        effects::DeathEffect::HealTarget { amount, target } => {
+                            if let Ok(mut damage) = damage_query.get_mut(*target) {
+                                let heal = DamageInstance{ damage: *amount, delay: 0.0, damage_type: DamageType::Heal, originator: *target };
+                                damage.damages.push(heal);
+                            }
+                        },
+                    }
+                }
+            }
             if death.spawn_corpse {
                 if let Some(sprite) = animated_sprite_option {
                     let mut animated_sprite = crate::graphics::animation::AnimatedSprite::default();
@@ -416,3 +484,5 @@ pub fn resolve_death(
         }
     }
 }
+
+pub fn spawn_projectile(commands: &mut Commands, origin_pos: Vector2, splash_radius: f32) {}
