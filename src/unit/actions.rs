@@ -123,8 +123,10 @@ pub struct TargetFlags {
     pub ignore_no_buff: bool,
     pub target_enemies: bool,
     pub target_allies: bool,
+    pub target_hypnotized_allies: bool,
     pub target_furthest: bool,
     pub target_lowest_pct_health: bool,
+    pub target_self: bool,
 }
 
 impl TargetFlags {
@@ -137,6 +139,8 @@ impl TargetFlags {
             target_allies: false,
             target_furthest: false,
             target_lowest_pct_health: false,
+            target_hypnotized_allies: false,
+            target_self: false,
         }
     }
 
@@ -149,6 +153,8 @@ impl TargetFlags {
             target_allies: false,
             target_furthest: true,
             target_lowest_pct_health: false,
+            target_hypnotized_allies: false,
+            target_self: false,
         }
     }
 
@@ -160,7 +166,9 @@ impl TargetFlags {
             target_enemies: false,
             target_allies: true,
             target_furthest: false,
+            target_hypnotized_allies: false,
             target_lowest_pct_health: false,
+            target_self: false,
         }
     }
 
@@ -172,7 +180,9 @@ impl TargetFlags {
             target_enemies: false,
             target_allies: true,
             target_furthest: false,
+            target_hypnotized_allies: false,
             target_lowest_pct_health: true,
+            target_self: false,
         }
     }
 
@@ -184,7 +194,37 @@ impl TargetFlags {
             target_enemies: false,
             target_allies: true,
             target_furthest: false,
+            target_hypnotized_allies: true,
             target_lowest_pct_health: false,
+            target_self: false,
+        }
+    }
+
+    pub fn heal_and_cleanse() -> Self {
+        Self {
+            ignore_full_health: false,
+            ignore_no_debuff: false,
+            ignore_no_buff: false,
+            target_enemies: false,
+            target_allies: true,
+            target_furthest: false,
+            target_hypnotized_allies: true,
+            target_lowest_pct_health: true,
+            target_self: false,
+        }
+    }
+
+    pub fn target_self() -> Self {
+        Self {
+            ignore_full_health: false,
+            ignore_no_debuff: false,
+            ignore_no_buff: false,
+            target_enemies: false,
+            target_allies: false,
+            target_furthest: false,
+            target_hypnotized_allies: false,
+            target_lowest_pct_health: false,
+            target_self: true,
         }
     }
 }
@@ -488,8 +528,12 @@ pub fn target_units(
                         for neighbor in neighbors.iter() {
                             // Handle alignment target flags
                             let mut is_ally = false;
+                            let mut is_ally_at_heart = false;
                             if let Ok(target_alignment) = alignment_query.get(*neighbor) {
                                 if let Ok(actor_alignment) = alignment_query.get(ent) {
+                                    if target_alignment.alignment_base == actor_alignment.alignment {
+                                        is_ally_at_heart = true;
+                                    }
                                     if target_alignment.alignment == actor_alignment.alignment {
                                         is_ally = true;
                                     }
@@ -499,7 +543,9 @@ pub fn target_units(
                                 continue;
                             }
                             if !target_flags.target_enemies && !is_ally {
-                                continue;
+                                if !(target_flags.target_hypnotized_allies && is_ally_at_heart) {
+                                    continue;
+                                }
                             }
 
                             // Handle other target flags
@@ -541,10 +587,11 @@ pub fn target_units(
                         }
                     }
 
-                    if cur_target == ent {
+                   
+                    if cur_target == ent && !target_flags.target_self {
                         continue;
                     }
-
+                 
                     if let Some(animation) = action_animation {
                         commands.entity(ent).insert(
                             crate::graphics::animation::PlayAnimationDirective {

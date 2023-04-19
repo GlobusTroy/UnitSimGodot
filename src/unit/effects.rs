@@ -8,9 +8,9 @@ use crate::{
 
 use super::{
     abilities::{DamageBuffAbility, FortifyAbility, OverdriveAbility},
-    actions::{Cooldown, OnHitEffects, TargetEntity, UnitActions, OnDeathEffects},
-    Acceleration, AntihealOnHitEffect, AppliedDamage, DamageInstance, DeathApproaches, MagicArmor,
-    StunOnHitEffect,
+    actions::{Cooldown, OnDeathEffects, OnHitEffects, TargetEntity, UnitActions},
+    Acceleration, AntihealOnHitEffect, AppliedDamage, Armor, DamageInstance, DeathApproaches,
+    MagicArmor, StunOnHitEffect, TeamAlignment, TeamValue, DamageType,
 };
 
 #[derive(Copy, Clone)]
@@ -22,7 +22,10 @@ pub enum Effect {
     },
     ArmorReductionEffect(super::abilities::ArmorReductionAttack),
     StunEffect(StunOnHitEffect),
+    Hypnosis{alignment: super::TeamValue, duration: f32},
+    ShredArmorEffect(super::abilities::ShredArmorAttack),
     CleanseEffect,
+    DivineShieldEffect{duration: f32},
     HealEffect {
         amount: f32,
         originator: Entity,
@@ -35,20 +38,42 @@ pub enum Effect {
     SuicideEffect {
         originator: Entity,
     },
+    AttackSpeedBuff{percent_cooldown_reduction: f32},
     ApplyStatBuffEffect(StatBuff, f32),
     OverdriveEffect(OverdriveAbility),
     DamageBuffEffect(DamageBuffAbility),
     ConfusionEffect(super::abilities::ConfusionAttack),
     TeleportBehindTargetEffect(Entity),
-    HealOnDeathEffect{amount: f32, target: Entity},
+    HealOnDeathEffect {
+        amount: f32,
+        target: Entity,
+    },
     AntiHeal(AntihealOnHitEffect),
     Visual(SpawnVisualEffect),
 }
 
 #[derive(Copy, Clone)]
 pub enum DeathEffect {
-    MagicSplashDamage { damage: f32, radius: f32 },
-    HealTarget { amount: f32, target: Entity },
+    SplashDamage {
+        damage: f32,
+        radius: f32,
+        damage_type: DamageType
+    },
+    HealAllies {
+        damage: f32,
+        alignment: TeamAlignment,
+    },
+    HealTarget {
+        amount: f32,
+        target: Entity,
+    },
+    PoisonSplash {
+        radius: f32,
+        percent_damage: f32,
+        movement_debuff: f32,
+        duration: f32,
+        texture: Rid,
+    },
 }
 
 #[derive(Component)]
@@ -98,7 +123,16 @@ pub struct PercentHealReduction(pub f32);
 pub struct SetAcceleration(pub f32);
 
 #[derive(Component, Clone, Debug)]
+pub struct SetArmor(pub f32);
+
+#[derive(Component, Clone, Debug)]
+pub struct SetAlignment(pub TeamValue);
+
+#[derive(Component, Clone, Debug)]
 pub struct StunnedBuff {}
+
+#[derive(Component, Clone, Debug)]
+pub struct DivineShieldBuff{}
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpawnVisualEffect {
@@ -108,6 +142,7 @@ pub struct SpawnVisualEffect {
 
 #[derive(Component, Copy, Clone, Debug, Default)]
 pub struct StatBuff {
+    pub mass_buff: f32,
     pub armor_buff: f32,
     pub magic_armor_buff: f32,
     pub speed_buff: f32,
@@ -146,12 +181,15 @@ pub fn resolve_effects(
                     }
                 }
 
-                // Heal On Death 
-                Effect::HealOnDeathEffect{amount, target} => {
-                   if let Ok(mut on_death) = on_death.get_mut(ent) {
-                        let heal = DeathEffect::HealTarget { amount: *amount, target: *target };
+                // Heal On Death
+                Effect::HealOnDeathEffect { amount, target } => {
+                    if let Ok(mut on_death) = on_death.get_mut(ent) {
+                        let heal = DeathEffect::HealTarget {
+                            amount: *amount,
+                            target: *target,
+                        };
                         on_death.vec.push(heal);
-                   }
+                    }
                 }
 
                 // SUICIDE / BANELING
@@ -249,6 +287,21 @@ pub fn resolve_effects(
                     }
                 }
 
+                // Statbuff
+                Effect::DivineShieldEffect { duration } => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        let buff = commands
+                            .spawn()
+                            .insert(BuffType { is_debuff: false })
+                            .insert(BuffTimer(*duration))
+                            .insert(TargetEntity { entity: ent })
+                            .insert(DivineShieldBuff{})
+                            .id();
+
+                        buff_holder.set.insert(buff);
+                    }
+                }
+
                 // Overdrive
                 Effect::OverdriveEffect(overdrive) => {
                     if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
@@ -278,6 +331,27 @@ pub fn resolve_effects(
                     }
                 }
 
+                // Attack Speed Buff 
+                Effect::AttackSpeedBuff{percent_cooldown_reduction} => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        if let Ok(actions) = actions_query.get(ent) {
+                            // First action SHOULD be basic attack
+                            if let Some(action) = actions.vec.get(0) {
+                                if let Ok(_cooldown) = action_query.get(*action) {
+                                    let buff = commands
+                                            .spawn()
+                                            .insert(BuffType { is_debuff: false })
+                                            .insert(BuffTimer(200.0))
+                                            .insert(PercentCooldownReduction(*percent_cooldown_reduction))
+                                            .insert(TargetEntity { entity: *action })
+                                            .id();
+                                    buff_holder.set.insert(buff);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // DamageBuff
                 Effect::DamageBuffEffect(overdrive) => {
                     if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
@@ -292,7 +366,7 @@ pub fn resolve_effects(
                                         if let Effect::DamageEffect(instance) = effect {
                                             index = i;
                                             let mut curr_instance = instance.clone();
-                                            curr_instance.damage += overdrive.damage;
+                                            curr_instance.damage *= 1. + overdrive.damage;
                                             new_instance = Some(curr_instance);
                                         }
                                         break;
@@ -338,10 +412,28 @@ pub fn resolve_effects(
                     }
                 }
 
+                // Shred Armor
+                Effect::ShredArmorEffect(shred_armor) => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        let buff = spawn_armor_shred_debuff(&mut commands, shred_armor, ent);
+
+                        buff_holder.set.insert(buff);
+                    }
+                }
+
                 // Antiheal
                 Effect::AntiHeal(antiheal) => {
                     if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
                         let buff = spawn_antiheal_buff(&mut commands, antiheal, ent);
+
+                        buff_holder.set.insert(buff);
+                    }
+                }
+
+                // Hypnosis 
+                Effect::Hypnosis { alignment, duration } => {
+                    if let Ok(mut buff_holder) = buff_holder_query.get_mut(ent) {
+                        let buff = spawn_hypnosis_buff(&mut commands, *duration, *alignment, ent);
 
                         buff_holder.set.insert(buff);
                     }
@@ -404,6 +496,7 @@ fn spawn_antiheal_buff(
         .insert(BuffType { is_debuff: true })
         .insert(BuffTimer(antiheal.duration))
         .insert(StatBuff {
+            mass_buff: 0.,
             armor_buff: 0.,
             magic_armor_buff: 0.0,
             speed_buff: 0.0,
@@ -443,6 +536,7 @@ fn spawn_armor_debuff(
         .insert(TargetEntity { entity: ent })
         .insert(MirrorTargetPosition {})
         .insert(StatBuff {
+            mass_buff: 0.,
             armor_buff: -debuff.armor_reduction,
             magic_armor_buff: -debuff.magic_armor_reduction,
             speed_buff: 0.0,
@@ -455,6 +549,45 @@ fn spawn_armor_debuff(
         .insert(crate::graphics::AlphaSprite(0.35))
         .insert(crate::graphics::ModulateSprite {
             r: 0.0,
+            g: 0.0,
+            b: 0.0,
+        })
+        .insert(crate::graphics::NewCanvasItemDirective {})
+        .insert(AnimatedSprite::new(debuff.texture))
+        .insert(crate::graphics::animation::PlayAnimationDirective {
+            animation_name: "fly".to_string(),
+            is_one_shot: false,
+        })
+        .id();
+    buff
+}
+
+fn spawn_armor_shred_debuff(
+    commands: &mut Commands,
+    debuff: &super::abilities::ShredArmorAttack,
+    ent: Entity,
+) -> Entity {
+    let buff = commands
+        .spawn()
+        .insert(BuffType { is_debuff: true })
+        .insert(BuffTimer(debuff.duration))
+        .insert(TargetEntity { entity: ent })
+        .insert(MirrorTargetPosition {})
+        .insert(SetArmor(0.0))
+        .insert(StatBuff {
+            mass_buff: 0.,
+            armor_buff: 0.0,
+            magic_armor_buff: 0.0,
+            speed_buff: 0.0,
+            acceleration_buff: 0.0,
+            heal_efficacy_mult_buff: 0.5,
+        })
+        .insert(crate::physics::Position { pos: Vector2::ZERO })
+        .insert(crate::physics::Velocity { v: Vector2::ZERO })
+        .insert(ScaleSprite(Vector2 { x: 0.75, y: 0.75 }))
+        .insert(crate::graphics::AlphaSprite(0.35))
+        .insert(crate::graphics::ModulateSprite {
+            r: 0.5,
             g: 0.0,
             b: 0.0,
         })
@@ -541,6 +674,22 @@ fn spawn_overdrive_buff(
     buff
 }
 
+fn spawn_hypnosis_buff(
+    commands: &mut Commands,
+    duration: f32,
+    alignment: super::TeamValue,
+    ent: Entity,
+) -> Entity {
+    let buff = commands
+        .spawn()
+        .insert(BuffType { is_debuff: true })
+        .insert(BuffTimer(duration))
+        .insert(SetAlignment(alignment))
+        .insert(TargetEntity { entity: ent })
+        .id();
+    buff
+}
+
 fn spawn_poison_buff(
     commands: &mut Commands,
     poison: &super::abilities::SlowPoisonAttack,
@@ -556,6 +705,7 @@ fn spawn_poison_buff(
             originator: originator_ent,
         })
         .insert(StatBuff {
+            mass_buff: 0.,
             armor_buff: 0.0,
             magic_armor_buff: 0.0,
             speed_buff: -poison.movement_debuff,
@@ -611,12 +761,26 @@ fn spawn_stun_buff(commands: &mut Commands, stun: &StunOnHitEffect, target_ent: 
 }
 
 pub fn set_stats_directly(
-    query: Query<(&SetAcceleration, &TargetEntity)>,
+    query: Query<(Option<&SetAcceleration>, Option<&SetArmor>, Option<&SetAlignment>, &TargetEntity)>,
     mut acceleration_query: Query<&mut Acceleration>,
+    mut armor_query: Query<&mut Armor>,
+    mut alignment_query: Query<&mut TeamAlignment>,
 ) {
-    for (set_val, target) in query.iter() {
-        if let Ok(mut acceleration) = acceleration_query.get_mut(target.entity) {
-            acceleration.acc = set_val.0;
+    for (set_val_acc_opt, set_val_armor_opt, set_val_alignment_opt, target) in query.iter() {
+        if let Some(set_acc) = set_val_acc_opt {
+            if let Ok(mut acceleration) = acceleration_query.get_mut(target.entity) {
+                acceleration.acc = set_acc.0;
+            }
+        }
+        if let Some(set_armor) = set_val_armor_opt {
+            if let Ok(mut armor) = armor_query.get_mut(target.entity) {
+                armor.armor = set_armor.0;
+            }
+        }
+        if let Some(set_alignment) = set_val_alignment_opt {
+            if let Ok(mut alignment) = alignment_query.get_mut(target.entity) {
+                alignment.alignment = set_alignment.0;
+            }
         }
     }
 }
@@ -634,9 +798,18 @@ pub fn apply_teleport(
     }
 }
 
+
+pub fn reset_alignment(mut query: Query<&mut TeamAlignment>) {
+    for mut alignment in query.iter_mut() {
+        alignment.alignment = alignment.alignment_base;
+    } 
+}
+
 pub fn apply_stat_buffs(
     mut query: Query<(
         &BuffHolder,
+        &crate::BaseMass,
+        &mut crate::physics::Mass,
         &mut super::Armor,
         &mut MagicArmor,
         &mut super::Speed,
@@ -645,9 +818,10 @@ pub fn apply_stat_buffs(
     )>,
     buff_query: Query<&StatBuff>,
 ) {
-    for (buff_holder, mut armor, mut magic_armor, mut speed, mut acceleration, mut heal_efficacy) in
+    for (buff_holder, base_mass, mut mass, mut armor, mut magic_armor, mut speed, mut acceleration, mut heal_efficacy) in
         query.iter_mut()
     {
+        mass.0 = base_mass.0;
         armor.armor = armor.base;
         magic_armor.percent_resist = magic_armor.base;
         speed.speed = speed.base;
@@ -656,6 +830,7 @@ pub fn apply_stat_buffs(
 
         for buff_entity in buff_holder.set.iter() {
             if let Ok(buff) = buff_query.get(*buff_entity) {
+                mass.0 += buff.mass_buff;
                 armor.armor += buff.armor_buff;
                 magic_armor.percent_resist += buff.magic_armor_buff;
                 speed.speed = (speed.speed + buff.speed_buff).max(1.0);

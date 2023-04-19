@@ -26,6 +26,12 @@ pub struct Splash {
 #[derive(Component)]
 pub struct DamageOverride {
     pub damage: f32,
+    pub damage_type: super::DamageType,
+}
+
+#[derive(Component)]
+pub struct OnHitEffectsOverride {
+    pub vec: Vec<super::effects::Effect>,
 }
 
 pub fn spawn_projectile(
@@ -98,6 +104,7 @@ pub fn projectile_contact(
         &ActionProjectileDetails,
         Option<&Splash>,
         Option<&DamageOverride>,
+        Option<&OnHitEffectsOverride>,
     )>,
     mut apply_query: Query<&mut crate::effects::ResolveEffectsBuffer>,
     splash_query: Query<(&Position, &Radius)>,
@@ -105,8 +112,15 @@ pub fn projectile_contact(
     spatial: Res<crate::physics::spatial_structures::SpatialHashTable>,
     mut events: ResMut<crate::event::EventQueue>,
 ) {
-    for (ent, position, projectile, details, splash_option, damage_override_option) in
-        query.iter_mut()
+    for (
+        ent,
+        position,
+        projectile,
+        details,
+        splash_option,
+        damage_override_option,
+        on_hit_override_option,
+    ) in query.iter_mut()
     {
         if position.pos.distance_to(projectile.target_pos) <= details.contact_distance {
             // Event Cue
@@ -121,6 +135,11 @@ pub fn projectile_contact(
             //Apply effects
             if let Ok(mut buffer) = apply_query.get_mut(projectile.target) {
                 if let Ok(effects) = origin_effect_query.get(projectile.origin_action) {
+                    for effect in effects.vec.iter() {
+                        buffer.vec.push(*effect);
+                    }
+                }
+                if let Some(effects) = on_hit_override_option {
                     for effect in effects.vec.iter() {
                         buffer.vec.push(*effect);
                     }
@@ -157,6 +176,11 @@ pub fn projectile_contact(
                                     if let Ok(mut buffer) =
                                         apply_query.get_mut(*potential_splash_target)
                                     {
+                                        if let Some(effects) = on_hit_override_option {
+                                            for effect in effects.vec.iter() {
+                                                buffer.vec.push(*effect);
+                                            }
+                                        }
                                         if let Ok(effects) =
                                             origin_effect_query.get(projectile.origin_action)
                                         {
@@ -179,6 +203,7 @@ pub fn projectile_contact(
                                                     buffer.vec.push(*effect);
                                                 }
                                             }
+
                                         } else {
                                             if let Some(damage_override) = damage_override_option {
                                                 buffer.vec.push(
@@ -186,7 +211,7 @@ pub fn projectile_contact(
                                                         super::DamageInstance {
                                                             damage: damage_override.damage,
                                                             delay: 0.0,
-                                                            damage_type: super::DamageType::Magic,
+                                                            damage_type: damage_override.damage_type,
                                                             originator: projectile.origin_action,
                                                         },
                                                     ),

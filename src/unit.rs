@@ -25,7 +25,8 @@ use crate::{
 
 use self::{
     abilities::*,
-    projectiles::{ActionProjectileDetails, DamageOverride},
+    effects::{ResolveEffectsBuffer, BuffHolder, DivineShieldBuff},
+    projectiles::{ActionProjectileDetails, DamageOverride, OnHitEffectsOverride},
 };
 
 #[derive(Component, Debug, Clone, Copy)]
@@ -133,6 +134,7 @@ pub struct HealEfficacy(pub f32);
 #[derive(Component, Copy, Clone)]
 pub struct TeamAlignment {
     pub alignment: TeamValue,
+    pub alignment_base: TeamValue,
 }
 
 #[derive(Component)]
@@ -140,6 +142,10 @@ pub struct Hitpoints {
     pub max_hp: f32,
     pub hp: f32,
 }
+
+
+#[derive(Component, Copy, Clone)]
+pub struct BaseMass(pub f32);
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum DamageType {
@@ -305,9 +311,11 @@ pub fn apply_damages(
         Option<&Armor>,
         Option<&MagicArmor>,
         Option<&HealEfficacy>,
+        Option<&BuffHolder>,
     )>,
     data_query: Query<(&TeamAlignment, &BlueprintId)>,
     pos_query: Query<&Position>,
+    divine_shield_query: Query<&DivineShieldBuff>,
     delta: Res<DeltaPhysics>,
     mut event_queue: ResMut<EventQueue>,
 ) {
@@ -318,8 +326,18 @@ pub fn apply_damages(
         armor_option,
         magic_armor_option,
         heal_efficacy_option,
+        buff_holder_option,
     ) in query.iter_mut()
     {
+        let mut divine_shield = false;
+        if let Some(buff_holder) = buff_holder_option {
+            for buff_ent in buff_holder.set.iter() {
+                if let Ok(_divinity) = divine_shield_query.get(*buff_ent) {
+                    divine_shield = true;
+                }
+            }
+        }
+
         let mut i = 0;
         while i < damages.damages.len() && !damages.damages.is_empty() {
             let mut damage = damages.damages.get_mut(i).unwrap();
@@ -372,7 +390,11 @@ pub fn apply_damages(
                     }
                 }
 
-                hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp - damage.damage);
+                if divine_shield {
+                    hitpoints.hp = hitpoints.hp.max(hitpoints.hp - damage.damage);
+                } else {
+                    hitpoints.hp = hitpoints.max_hp.min(hitpoints.hp - damage.damage);
+                }
                 damages.damages.remove(i);
             } else {
                 i += 1;
@@ -402,6 +424,7 @@ pub fn resolve_death(
         Option<&crate::graphics::ScaleSprite>,
         Option<&OnDeathEffects>,
     )>,
+    mut heal_baneling_query: Query<(Entity, &TeamAlignment)>,
     mut damage_query: Query<&mut AppliedDamage>,
 ) {
     for (
@@ -418,7 +441,7 @@ pub fn resolve_death(
             if let Some(death_fx) = death_fx_option {
                 for effect in death_fx.vec.iter() {
                     match effect {
-                        effects::DeathEffect::MagicSplashDamage { damage, radius } => {
+                        effects::DeathEffect::SplashDamage { damage, radius, damage_type } => {
                             commands
                                 .spawn()
                                 .insert(projectiles::Projectile {
@@ -432,17 +455,72 @@ pub fn resolve_death(
                                     projectile_texture: Rid::new(),
                                     contact_distance: 1.0,
                                 })
-                                .insert(projectiles::DamageOverride { damage: *damage })
+                                .insert(projectiles::DamageOverride { damage: *damage, damage_type: *damage_type })
                                 .insert(Position { pos: position.pos })
                                 .insert(Velocity { v: Vector2::ZERO })
                                 .insert(projectiles::Splash { radius: *radius });
                         }
                         effects::DeathEffect::HealTarget { amount, target } => {
                             if let Ok(mut damage) = damage_query.get_mut(*target) {
-                                let heal = DamageInstance{ damage: *amount, delay: 0.0, damage_type: DamageType::Heal, originator: *target };
+                                let heal = DamageInstance {
+                                    damage: -*amount,
+                                    delay: 0.0,
+                                    damage_type: DamageType::Heal,
+                                    originator: *target,
+                                };
                                 damage.damages.push(heal);
                             }
-                        },
+                        }
+                        effects::DeathEffect::HealAllies { damage, alignment } => {
+                            for (target_ent, test_alignment) in heal_baneling_query.iter_mut() {
+                                if test_alignment.alignment == alignment.alignment {
+                                    if let Ok(mut damage_buff) = damage_query.get_mut(target_ent) {
+                                        let heal = DamageInstance {
+                                            damage: -*damage,
+                                            delay: 0.0,
+                                            damage_type: DamageType::Heal,
+                                            originator: ent,
+                                        };
+                                        damage_buff.damages.push(heal)
+                                    }
+                                }
+                            }
+                        }
+                        effects::DeathEffect::PoisonSplash {
+                            radius,
+                            percent_damage,
+                            movement_debuff,
+                            duration,
+                            texture,
+                        } => {
+                            commands
+                                .spawn()
+                                .insert(projectiles::Projectile {
+                                    target: ent,
+                                    target_pos: position.pos,
+                                    origin_action: ent,
+                                })
+                                .insert(ActionProjectileDetails {
+                                    projectile_speed: 0.0,
+                                    projectile_scale: 1.0,
+                                    projectile_texture: Rid::new(),
+                                    contact_distance: 12.0,
+                                })
+                                .insert(OnHitEffectsOverride {
+                                    vec: vec![effects::Effect::PoisonEffect {
+                                        poison: SlowPoisonAttack {
+                                            duration: *duration,
+                                            percent_damage: *percent_damage,
+                                            movement_debuff: *movement_debuff,
+                                            poison_texture: *texture,
+                                        },
+                                        originator: ent,
+                                    }],
+                                })
+                                .insert(Position { pos: position.pos })
+                                .insert(Velocity { v: Vector2::ZERO })
+                                .insert(projectiles::Splash { radius: *radius });
+                        }
                     }
                 }
             }
